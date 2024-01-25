@@ -1,17 +1,122 @@
 ---
 title: "Ramji_Lab2"
 author: "Anna Ramji"
-date: 
+date: 2024-01-24
 output: pdf_document
 ---
 
-```{r}
+## Import libraries
+```{r libraries}
 library(tidyverse)
 library(stats)
 library(tidymodels)
-library("janitor")
-library("corrplot")
+library(janitor)
+library(corrplot)
+library(gt)
+library(lubridate)
+```
+
+## Data: importing, cleaning, wrangling, preparation
+```{r}
 dat <- read_csv(file = "https://raw.githubusercontent.com/MaRo406/eds-232-machine-learning/main/data/pumpkin-data.csv")
+
+# Clean names to the snake_case convention ----
+pumpkins <- dat %>% clean_names(case = "snake")
+
+# select relevant columns ----
+pumpkins <- pumpkins %>% select(variety, city_name, package, low_price, high_price, date)
+
+# Extract the month and day from the dates and add as new columns ----
+pumpkins <- pumpkins %>%
+  mutate(date = mdy(date),  
+         day = yday(date),
+         month = month(date))
+
+
+# Create a new column, "price" ----
+pumpkins <- pumpkins %>% 
+  mutate(price = (low_price + high_price) / 2)
+
+# Retain only pumpkins with "bushel" in the package column ----
+new_pumpkins <- pumpkins |> 
+  filter(str_detect(string = package,
+                    pattern = "bushel"))
+
+# Convert the price if the Package contains fractional bushel values ----
+new_pumpkins <- new_pumpkins %>% 
+  mutate(price = case_when(
+    str_detect(package, "1 1/9") ~ price/(1.1),
+    str_detect(package, "1/2") ~ price*2,
+    TRUE ~ price))
+
+# Set theme
+theme_set(theme_light())
+
+# Specify a recipe ----
+pumpkins_recipe <- recipe(price ~ ., # model formula, price is our outcome variable, look at other columns as predictors
+                          data = new_pumpkins) %>% 
+  # piping recipe into step_integer allows us to skip the recipe = argument in step_integer
+  step_integer(all_predictors(), # selector function, choose all predictors
+               zero_based = TRUE) # logical indicating whether integers should start at zero and new values should be appended as the largest integer
+
+
+# Prep the recipe
+pumpkins_prep <- prep(pumpkins_recipe)
+
+# Bake the recipe to extract a preprocessed new_pumpkins data
+baked_pumpkins <- bake(pumpkins_prep, new_data = NULL)
+
+# Split the data into training and test sets
+pumpkins_split <- baked_pumpkins %>% 
+  initial_split(prop = 0.8) # defining 80-20 split
+
+
+# Extract training and test data
+pumpkins_train <- training(pumpkins_split)
+pumpkins_test <- testing(pumpkins_split)
+
+
+# Create a recipe for preprocessing the data
+lm_pumpkins_recipe <- recipe(price ~ package, data = pumpkins_train) %>% 
+  step_integer(all_predictors(), zero_based = TRUE)
+
+
+# Create a linear model specification
+lm_spec <- linear_reg() %>% 
+  set_engine("lm") %>% 
+  set_mode("regression")
+
+# Hold modeling components in a workflow
+lm_wf <- workflow() %>% 
+  add_recipe(lm_pumpkins_recipe) %>% 
+  add_model(lm_spec)
+
+# Train the model
+lm_wf_fit <- lm_wf %>% 
+  fit(data = pumpkins_train)
+
+# Make predictions for the test set
+predictions <- lm_wf_fit %>% 
+  predict(new_data = pumpkins_test)
+
+
+# Bind predictions to the test set
+lm_results <- pumpkins_test %>% 
+  select(c(package, price)) %>% 
+  bind_cols(predictions)
+
+# Encode package column
+package_encode <- lm_pumpkins_recipe %>% 
+  prep() %>% 
+  bake(new_data = pumpkins_test) %>% 
+  select(package)
+
+
+# Bind encoded package column to the results
+ plot_results <- lm_results %>%
+ bind_cols(package_encode %>%
+               rename(package_integer = package)) %>%
+  relocate(package_integer, .after = package)
 ```
 
 
@@ -19,7 +124,7 @@ Today we will be continuing the pumpkin case study from last week. We will be us
 
 Once you have done that, we'll start today's lab by specifying a recipe for a polynomial model.  First we specify a recipe that identifies our variables and data, converts the package variable to a numerical form, and then adds a polynomial effect with `step_poly()`
 
-```{r}
+```{r recipe}
 # Specify a recipe
 poly_pumpkins_recipe <-
   recipe(price ~ package, data = pumpkins_train) %>%
@@ -31,7 +136,7 @@ How did that work? Later we will learn about model tuning that will let us do th
 
 Polynomial regression is still linear regression, so our model specification looks similar to before.
 
-```{r}
+```{r model}
 # Create a model specification called poly_spec
 poly_spec <- linear_reg() %>% 
   set_engine("lm") %>% 
@@ -39,7 +144,7 @@ poly_spec <- linear_reg() %>%
 ```
 Question 1: Now take the recipe and model specification that just created and bundle them into a workflow called `poly_df`.
 
-```{r}
+```{r workflow}
 # Bundle recipe and model spec into a workflow
 poly_wf <- workflow() |> 
   add_recipe(poly_pumpkins_recipe) |> 
@@ -47,7 +152,7 @@ poly_wf <- workflow() |>
 ```
 
 Question 2: fit a model to the pumpkins_train data using your workflow and assign it to poly_wf_fit
-```{r}
+```{r fit-model}
 # Create a model
 poly_wf_fit <- fit(data = pumpkins_train, object = poly_wf)
 ```
@@ -76,11 +181,7 @@ metrics(data = poly_results,
         estimate = .pred)
 ```
 
-```{r}
-metrics(data = lm_results,
-        truth = price,
-        estimate = .pred)
-```
+
 
 Question 3: How do the performance metrics differ between the linear model from last week and the polynomial model we fit today?  Which model performs better on predicting the price of different packages of pumpkins?
 
@@ -135,7 +236,8 @@ poly_smooth_plot <- poly_results %>%
                color = "orange",
                size = 1.2,
                se = FALSE) +
-   xlab("package")
+   labs(x = "Package type",
+        y = "Price ($/bushel)")
 
 poly_smooth_plot
   
@@ -146,18 +248,20 @@ OK, now it's your turn to go through the process one more time.
 Additional assignment components :
 6. Choose a new predictor variable (anything not involving package type) in this dataset.
 
-I'm choosing variety.
+I'm choosing city name.
 
 7. Determine its correlation with the outcome variable (price).  (Remember we calculated a correlation matrix last week)
 
 ```{r}
+set.seed(123)
 # correlation between price and variety
 
 # using baked pumpkins here because we want to find correlation (everything needs to be numeric)
-cor(baked_pumpkins$variety,
+cor(baked_pumpkins$city_name,
     baked_pumpkins$price)
 
 ```
+city_name's correlation with price is approximately -0.32
 
 
 8. Create and test a model for your new predictor:
@@ -167,54 +271,119 @@ cor(baked_pumpkins$variety,
   - Create a model by fitting the workflow
   - Evaluate model performance on the test data
   
-```{r variety_model}
+```{r my_variety_model}
 set.seed(123)
 
 # we split our data into training and test data in Lab 1
 
-
 # create a recipe ----
-poly_pumpkins_recipe_variety <-
-  recipe(price ~ variety, data = pumpkins_train) %>%
-  step_integer(all_predictors(), zero_based = TRUE) %>% 
+new_poly_pumpkins_recipe <-
+  recipe(price ~ city_name, data = pumpkins_train)  |> 
+  step_integer(all_predictors(), zero_based = TRUE) |> 
   step_poly(all_predictors(), degree = 3) # specifying polynomial
 
 
 # build a model specification called poly_spec_variety ----
-poly_spec_variety <- linear_reg() %>% 
-  set_engine("lm") %>% 
+new_poly_spec <- linear_reg()  |>  
+  set_engine("lm") |> 
   set_mode("regression")
 
 # bundle the recipe and model specification into a workflow ----
-poly_wf_variety <- workflow() |> 
-  add_recipe(poly_pumpkins_recipe_variety) |> 
-  add_model(poly_spec_variety) 
+new_poly_wf <- workflow() |> 
+  add_recipe(new_poly_pumpkins_recipe) |> 
+  add_model(new_poly_spec) 
 
 
 # create a model by fitting the workflow ---- 
-poly_wf_fit_variety <- fit(data = pumpkins_train, object = poly_wf_variety)
+new_poly_wf_fit <- fit(data = pumpkins_train, object = new_poly_wf)
 
 # ---- Evaluate model performance on test data ----
 
 # make price predictions on test data 
-poly_results_variety <- poly_wf_fit_variety %>% 
-  predict(new_data = pumpkins_test) %>% 
-  bind_cols(pumpkins_test %>% # bind multiple dfs by these columns
-              select(c(variety, price))) %>% 
+new_poly_results <- new_poly_wf_fit |> 
+  predict(new_data = pumpkins_test) |> 
+  bind_cols(pumpkins_test |>  # bind multiple dfs by these columns
+              select(c(city_name, price))) |>  
   relocate(.pred, # put prediction column after price column for easier comparison
            .after = last_col()) 
 
 # evaluate how the model performed using yardstick::metrics()
-variety_mod_performance <- metrics(data = poly_results_variety,
+my_mod_performance <- metrics(data = new_poly_results,
                                    truth = price, # evaluate based on true price
                                    estimate = .pred) # name of estimate column
 
-variety_mod_performance
-
+my_mod_performance |> gt()
 
 ```
   
   
   - Create a visualization of model performance
   
+```{r month-model-plot}
+# Make a smoother scatter plot 
+month_poly_plot <- new_poly_results %>% 
+  ggplot(mapping = aes(x = city_name, y = price)) +
+   geom_point(size = 1.6,
+              alpha = 0.7,
+              color = "midnightblue") +
+   # Overlay a line of best fit
+   geom_smooth(method = lm,
+               formula = y ~ poly(x, degree = 3),
+               color = "orange",
+               size = 1.2,
+               se = FALSE) +
+   labs(x = "City Name",
+        y = "Price ($/bushel)")
+
+month_poly_plot
+```
+  
 Lab 2 due 1/24 at 11:59 PM
+
+
+
+```{r variety_model, eval=FALSE, include=FALSE}
+set.seed(123)
+
+# we split our data into training and test data in Lab 1
+
+# create a recipe ----
+poly_pumpkins_recipe_variety <-
+  recipe(price ~ variety, data = pumpkins_train)  |> 
+  step_integer(all_predictors(), zero_based = TRUE) |> 
+  step_poly(all_predictors(), degree = 3) # specifying polynomial
+
+
+# build a model specification called poly_spec_variety ----
+poly_spec_variety <- linear_reg()  |>  
+  set_engine("lm") |> 
+  set_mode("regression")
+
+# bundle the recipe and model specification into a workflow ----
+poly_wf_variety <- workflow() |> 
+  add_recipe(poly_pumpkins_recipe_variety) |> 
+  add_model(poly_spec_month) 
+
+
+# create a model by fitting the workflow ---- 
+poly_wf_fit_month <- fit(data = pumpkins_train, object = poly_wf_month)
+
+# ---- Evaluate model performance on test data ----
+
+# make price predictions on test data 
+poly_results_month <- poly_wf_fit_month |> 
+  predict(new_data = pumpkins_test) |> 
+  bind_cols(pumpkins_test |>  # bind multiple dfs by these columns
+              select(c(month, price))) |>  
+  relocate(.pred, # put prediction column after price column for easier comparison
+           .after = last_col()) 
+
+# evaluate how the model performed using yardstick::metrics()
+month_mod_performance <- metrics(data = poly_results_month,
+                                   truth = price, # evaluate based on true price
+                                   estimate = .pred) # name of estimate column
+
+month_mod_performance
+
+
+```
