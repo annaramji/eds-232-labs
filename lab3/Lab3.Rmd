@@ -1,12 +1,17 @@
 ---
-title: "YourLastName_Lab3"
-author: "Your Name"
-date: 
+title: "Ramji_Lab3"
+author: "Anna Ramji"
+date: "2024-01-31"
 output: 
+  pdf_document:
+    latex_engine: xelatex
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+
+# import packages 
 library(tidyverse)
 library(rsample)
 library(glmnet)
@@ -24,7 +29,7 @@ Pull the abalone data from Github and take a look at it.
 
 ```{r data}
 abdat<- read_csv(file = "https://raw.githubusercontent.com/MaRo406/eds-232-machine-learning/main/data/abalone-data.csv")
-glimpse(abdat)
+# glimpse(abdat) # commenting this out because I got marked down for having too many outputs in the last lab!
 
 abdat <- abdat |> 
   select(-...1) # remove index column
@@ -48,7 +53,6 @@ abdat_test <- testing(abdat_split)
 
 ```
 
-
 ### Fit a ridge regression model
 
 -   ***Question 2***. Use the model.matrix() function to create a predictor matrix, x, and assign the Rings variable to an outcome vector, y.
@@ -64,7 +68,6 @@ y <- abdat_train$Rings
 
 ```
 
-
 -   ***Question 3***. Fit a ridge model (controlled by the alpha parameter) using the glmnet() function. Make a plot showing how the estimated coefficients change with lambda. (Hint: You can call plot() directly on the glmnet() objects).
 
 ```{r q3}
@@ -72,7 +75,7 @@ ridge <- glmnet(
   x = x,
   y = y,
   alpha = 0
-)
+  )
 
 plot(ridge, xvar = "lambda")
 ```
@@ -88,15 +91,15 @@ In lecture we learned about two methods of estimating our model's generalization
 ridge_abd <- cv.glmnet(
   x = x,
   y = y,
-  alpha = 0 # ridge
-)
+  alpha = 0) # ridge
+  
 
 # LASSO cross validation
 lasso_abd <- cv.glmnet(
   x = x,
   y = y,
-  alpha = 1
-)
+  alpha = 1) # LASSO 
+  
 
 # plot results
 par(mfrow = c(1, 2)) # {graphics}, set or query graphical parameters
@@ -105,51 +108,48 @@ plot(lasso_abd, main = "Lasso penalty\n\n")
 
 ```
 
-
 -   ***Question 5***. Interpret the graphs. What is being displayed on the axes here? How does the performance of the models change with the value of lambda?
 
-**The x-axes are showing the values of lambda (log-transformed), and the x-axis shows the values of Mean-Squared Error. Each point on the line for the graphs shows the MSE at each value of lambda (red line showing average, grey showing variation over the 10 runs). The numbers at the top of the plots show the number of coefficients in the model (constant for Ridge, decreasing for LASSO as it performs feature selection). In both models, as lanbda increases, the MSE also increases. **
+**The x-axes are showing the values of lambda (log-transformed), and the x-axis shows the values of Mean-Squared Error. Each point on the line for the graphs shows the MSE at each value of lambda (red line showing average, grey showing variation over the 10 runs). The numbers at the top of the plots show the number of coefficients in the model (constant for Ridge, decreasing for LASSO as it performs feature selection). In both models, as lanbda increases, the MSE also increases.**
 
 -   ***Question 6***. Inspect the ridge model object you created with cv.glmnet(). The \$cvm column shows the MSEs for each CV fold. What is the minimum MSE? What is the value of lambda associated with this MSE minimum?
 
 ```{r q6}
 # ridge min MSE
-print(paste("The minimum MSE is", round(min(ridge_abd$cvm), 4)))
+print(paste("The minimum MSE is",
+            round(min(ridge_abd$cvm), 4)))
 
 # Lambda for min MSE
-print(paste("The lambda value associated with the minimum MSE is", round(ridge_abd$lambda.min, 4)))
+print(paste("The lambda value associated with the minimum MSE is",
+            round(ridge_abd$lambda.min, 4)))
 
 ```
-
 
 -   ***Question 7***. Do the same for the lasso model. What is the minimum MSE? What is the value of lambda associated with this MSE minimum?
 
 ```{r q7}
 # ridge min MSE
-print(paste("The minimum MSE is", round(min(lasso_abd$cvm), 4)))
+print(paste("The minimum MSE in the Lasso model is",
+            round(min(lasso_abd$cvm), 4)))
 
 # Lambda for min MSE
-print(paste("The lambda value associated with the minimum MSE is", round(lasso_abd$lambda.min, 4)))
+print(paste("The lambda value associated with the minimum MSE in the Lasso model is",
+            round(lasso_abd$lambda.min, 4)))
 
 ```
 
-
 Data scientists often use the "one-standard-error" rule when tuning lambda to select the best model. This rule tells us to pick the most parsimonious model (fewest number of predictors) while still remaining within one standard error of the overall minimum cross validation error. The cv.glmnet() model object has a column that automatically finds the value of lambda associated with the model that produces an MSE that is one standard error from the MSE minimum (\$lambda.1se).
 
-
-
 -   ***Question 8.*** Find the number of predictors associated with this model (hint: the \$nzero is the \# of predictors column).
-
 
 ```{r q8}
 # No. of coef | 1-SE MSE (makes sense because with LASSO, we're performing feature selection)
 lasso_abd$nzero[lasso_abd$lambda == lasso_abd$lambda.1se]
-```
 
+```
 
 -   ***Question 9*****.** Which regularized regression worked better for this task, ridge or lasso? Explain your answer.
 
-```{r q9}
+Lasso seems to have worked better for this task for a couple of reasons. First, the minimum mean squared error (MSE) is lower for Lasso than Ridge -- at around 4.77 (with a lambda value of 0.002) and 5.1 (with a lambda value of 0.2) respectively. Second, the Lasso model has feature selection, with 5 coefficients selected within 1 standard error (SE) of the MSE. This is relevant to evaluating which regularized regression model worked better because having fewer features, combined with a lower MSE, sets us up for less collinearity or potential correlation between terms, and also reduces the risk of overfitting to too many variables.
 
-```
-
+Thus, overall, Lasso is a better regularized regression model for this task because it has lower minimum MSE and MSE within 1 SE from the minimum fewer predictors -- having fewer features = less collinearity, and more features can lead us to be at risk for more overfitting.
