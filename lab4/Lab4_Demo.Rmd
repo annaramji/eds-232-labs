@@ -1,0 +1,149 @@
+---
+title: "Lab4_Demo"
+author: "Mateo Robbins"
+date: "2024-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)     # for data wrangling
+library(ggplot2)   # for awesome plotting
+library(rsample)   # for data splitting
+library(recipes)   # data preprocessing
+library(caret)     # for logistic regression modeling
+library(broom)  # for tidy model outputs
+```
+Let's explore how employee income and overtime hours worked affect likelihood of employee attrition.  Any predictions?
+
+```{r}
+# 
+data("attrition", package = "modeldata")
+
+df <- attrition %>% mutate_if(is.ordered, factor, ordered = FALSE)
+
+# Create training (70%) and test (30%) sets for the data (default is 75)
+# rsample::attrition data. (old)
+set.seed(123)  # for reproducibility 
+churn_split <- initial_split(df, prop = 0.7)
+churn_train <- training(churn_split)
+churn_test  <- testing(churn_split)
+```
+
+Let's set up set up our recipes now for preprocessing. 
+```{r recipe}
+#specify and prep recipe
+churn_rec <- recipe(Attrition ~ .,
+                    data = churn_train) |> 
+  step_integer(Attrition,
+               zero_based = TRUE) |> # output at this stage is just the recipe
+  # when baked, turns into 0 and 1
+  prep(churn_train) # prep the data (now it says Trained, if we look at churn_train$Attrition, turns it into )
+# would be doing the calculations on the prep step if we were log transforming
+
+#bake recipe with training data
+churn_baked_train <- bake(churn_rec, new_data = churn_train)
+# note: Attrition is now an integer type with only 0s and 1s
+  
+```
+
+```{r specify_models_glm}
+
+# based glm, not elastic net
+
+#MonthlyIncome
+model_inc <- glm(data = churn_baked_train, 
+                 Attrition ~ MonthlyIncome, 
+                 family = "binomial")
+  
+#OverTime
+model_time <- glm(data = churn_baked_train, 
+                  Attrition ~ OverTime, 
+                  family = "binomial")
+```
+
+
+```{r tidy_model_objs}
+
+broom::tidy(model_inc)
+broom::tidy(model_time)
+
+```
+
+```{r exp_coefs}
+#exponentiate the coefficients from model objects for interpretation. Gives us changes in odds of attrition
+
+# logit transformation
+# more intuitive interpretation of the magnitude of beta coefficient
+# multiplicative by the factor of the beta weight
+
+exp(coef(model_inc))
+
+exp(coef(model_time))
+
+
+```
+1. 
+- the odds of the employee attriting increase *by* (multiplicative) 0.9999 for every 1 additional dollar they make per month
+when u multiply it by 0.999, it's actually going down
+the odds of them leaving (pr (leaving) / pr (not leaving)) is decreasing for every 1 additional dollar they make (makes sense, incrementally decreasing likelihood they will leave)
+
+2. the odds (Pr happening / Pr not happening) of the employee attriting multiply by 4.4 if they worked overtime  
+
+
+
+```{r recode_attrition_test}
+churn_baked_test <- bake(churn_rec, 
+                         new_data = churn_test)
+```
+
+```{r plot_income_attrition}
+# monthly income attrtion ----
+ggplot(data = churn_baked_test, aes(x = MonthlyIncome,
+                                    y = Attrition)) +
+  geom_point() +
+  stat_smooth(method = "glm",
+              se = TRUE,
+              method.args = list(family = "binomial"))
+
+# overtime yes/no attrition ---- 
+ggplot(data = churn_baked_test, aes(x = OverTime,
+                                    y = Attrition)) +
+  geom_point() +
+  stat_smooth(method = "glm",
+              se = TRUE,
+              method.args = list(family = "binomial"))
+
+```
+
+We can add more predictors, creating a multiple logistic regression model
+
+```{r mult_log_regression}
+# first train with both predictors
+model_both <- glm(Attrition ~ MonthlyIncome + OverTime,
+                  family = "binomial", data = churn_train)
+
+# look at trained model results
+broom::tidy(model_both)
+
+
+
+exp(coef(model_both))
+
+
+```
+
+
+Plot multiregression
+
+```{r}
+
+ggplot(churn_baked_test, aes(x = MonthlyIncome, y = Attrition, color = OverTime)) +
+  geom_point(alpha = 0.3) +
+  stat_smooth(method = "glm",
+              se = FALSE, 
+              method.args = list(family = "binomial"))
+
+```
+
+
