@@ -20,16 +20,23 @@ You have two options for completing this lab.
 **Option 2**: **Classify by genres**. Build models that predict which genre a song belongs to. This will use a pre-existing Spotify dataset available from Kaggle.com (<https://www.kaggle.com/datasets/mrmorj/dataset-of-songs-in-spotify>)
 
 ```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 library(spotifyr) #API interaction
 library(tidyverse)
 library(tidymodels)
+library(here)
+library(parsnip)
+library(caret)
+library(rpart.plot) # for decision trees
 ```
 
 Client ID and Client Secret are required to create and access token that is required to interact with the API. You can set them as system values so we don't have to do provide them each time.
 
 ```{r access_API}
 
-Sys.setenv(SPOTIFY_CLIENT_ID = 'your_client_id_here') Sys.setenv(SPOTIFY_CLIENT_SECRET = 'you_client_secret_here')
+Sys.setenv(SPOTIFY_CLIENT_ID = 'd501ac8e44a540e491fe8b2125edc43c') 
+
+Sys.setenv(SPOTIFY_CLIENT_SECRET = '49f3b563b8de4cb9a2ed0b09741553d6')
 
 authorization_code <- get_spotify_authorization_code(scope = scopes()[c(1:19)]) #sets an authorization code that you'll need to provide for certain get_ functions via my_tracks <- get_my_saved_tracks(authorization = authorization_code)
 
@@ -40,13 +47,73 @@ access_token <- get_spotify_access_token() #takes ID and SECRET, sends to Spotif
 
 You can use get_my_saved_tracks() to request all your liked tracks. It would be good if you had at least 150-200 liked tracks so the model has enough data to work with. If you don't have enough liked tracks, you can instead use get_my_recently_played(), and in that case grab at least 500 recently played tracks if you can.
 
+```{r}
+my_tracks_1 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 0)
+my_tracks_2 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 50)
+my_tracks_3 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 100)
+my_tracks_4 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 150)
+
+my_tracks <- rbind(my_tracks_1, my_tracks_2, my_tracks_3, my_tracks_4)
+```
+
+
 The Spotify API returns a dataframe of tracks and associated attributes. However, it will only return up to 50 (or 20) tracks at a time, so you will have to make multiple requests. Use a function to combine all your requests in one call.
+
+```{r}
+
+
+
+
+```
+
 
 Once you have your tracks, familiarize yourself with this initial dataframe. You'll need to request some additional information for the analysis. If you give the API a list of track IDs using get_track_audio_features(), it will return an audio features dataframe of all the tracks and some attributes of them.
 
+
+```{r}
+audio1 <- get_track_audio_features(my_tracks$track.id[1:100])
+audio2 <- get_track_audio_features(my_tracks$track.id[101:200])
+
+audio_features <- rbind(audio1, audio2)
+
+```
+
+
 These track audio features are the predictors we are interested in, but this dataframe doesn't have the actual names of the tracks. Append the 'track.name' column from your favorite tracks database.
 
+
+```{r}
+named_audio <- my_tracks |>
+  select(track.name) |>
+  bind_cols(audio_features)
+  
+
+# named_audio_anna <- write_csv(named_audio, file = "named_audio_anna.csv")
+
+
+```
+
+
 Find a class mate whose data you would like to use. Add your partner's data to your dataset. Create a new column that will contain the outcome variable that you will try to predict. This variable should contain two values that represent if the track came from your data set or your partner's.
+
+```{r}
+my_audio_data <- named_audio |> 
+  mutate(collection = "Anna") # creating collection column to distinguish whose data is whose
+
+sams_data <- read_csv(here("lab5", "data", "sam_audio.csv")) |> 
+  mutate(collection = "Sam")
+
+
+combined_audio_df <- rbind(my_audio_data, sams_data) |> 
+  mutate_if(is.ordered, .funs = factor, ordered = FALSE) |> 
+  mutate(collection = as.factor(collection))
+
+combined_audio_clean <- combined_audio_df |> 
+  select(-c(track.name, id, uri, track_href, analysis_url, type)) # removing columns that don't seem like they're going to be helpful in making our model 
+
+```
+
+
 
 **Option 2: Data preparation**
 
@@ -60,24 +127,49 @@ Let's take a look at your data. Do some exploratory summary stats and visualizat
 
 For example: What are the most danceable tracks in your dataset? What are some differences in the data between users (Option 1) or genres (Option 2)?
 
+
+```{r}
+most_danceable <- combined_audio_df |> 
+  filter(danceability == max(danceability)) |> 
+  select(track.name, danceability)
+
+most_danceable
+
+
+ggplot(data = combined_audio_clean) +
+  geom_density(aes(x = danceability, 
+                  # y = tempo,
+                   fill = collection),
+               alpha = 0.5) +
+  theme_bw() +
+  labs(x = "Danceability",
+       y = "Density",
+       fill = "Collection",
+       title = "Danceability Density plot per Collection")
+```
+
+
 ### **Modeling**
 
 Create competing models that predict whether a track belongs to:
 
-Option 1. you or your partner's collection
+**Option 1. you or your partner's collection**
 
 Option 2. genre 1 or genre 2
 
 You will eventually create four final candidate models:
 
-1.  k-nearest neighbor (Week 5)
-2.  decision tree (Week 5)
+1. **k-nearest neighbor (Week 5)**
+2.  **decision tree (Week 5)**
+
 3.  bagged tree (Week 6)
     -   bag_tree()
     -   Use the "times =" argument when setting the engine during model specification to specify the number of trees. The rule of thumb is that 50-500 trees is usually sufficient. The bottom of that range should be sufficient here.
 4.  random forest (Week 6)
     -   rand_forest()
     -   m_try() is the new hyperparameter of interest for this type of model. Make sure to include it in your tuning process
+    
+*Remember: overall goal is to build models that predict whether a given song will be in your collection vs. a partner in class.*
 
 Go through the modeling process for each model:
 
@@ -90,3 +182,288 @@ Tuning. Find the best values for each hyperparameter (within a reasonable range)
 Compare the performance of the four final models you have created.
 
 Use appropriate performance evaluation metric(s) for this classification task. A table would be a good way to display your comparison. Use at least one visualization illustrating your model results.
+
+```{r knn-model}
+set.seed(123)
+# --------------- preprocessing ---------------------
+# split into testing and training sets
+
+audio_split <- initial_split(combined_audio_clean, 0.75)
+audio_train <- training(audio_split)
+audio_test <- testing(audio_split)
+
+
+# ------------ recipe, model, workflow -------------------------
+knn_recipe <- recipe(collection ~ ., # outcome variable is whose collection the song is in
+                  data = audio_train) |> 
+  step_dummy(all_nominal_predictors()) |>  
+  step_normalize(all_numeric_predictors()) |>  # scale and center numeric predictors
+  prep()
+
+
+knn_model <- nearest_neighbor(neighbors = tune()) |> 
+  # specify model again, rather than telling it we want to use 5 neighbors, telling it we're going to tune the model to get the best value of that parameter (nn)
+  set_mode("classification") |> 
+  set_engine("kknn") # underlying function 
+
+
+knn_workflow <- workflow() |>  # create workflow
+  add_model(knn_model) |> 
+  add_recipe(knn_recipe)
+
+# --------------- resampling ---------------------
+
+cv_folds <- vfold_cv(audio_train, v = 10)
+
+# --------------- tuning ------------------------------
+
+knn_cv_tune <- knn_workflow |> 
+  tune_grid(resamples = cv_folds,
+            grid = 10) # use cv to get nearest neighbors
+
+# discussion way ----
+# Fit the workflow on our predefined folds and a grid of hyperparameters
+fit_knn_cv <- knn_workflow |>
+  tune_grid(
+    cv_folds,
+    grid = data.frame(neighbors = c(1, 5, seq(10, 100, 10)))
+  )
+
+# running 60 times
+# 5 folds, for each of 12 different sets of neighbors
+# 12 diff values of k we want to try
+
+# The final workflow for our KNN model. Finalize_workflow takes a workflow and a set of parameters.  In this case, that set is just the best value of k
+knn_final_accuracy <- knn_workflow |>
+  finalize_workflow(select_best(knn_cv_tune, metric = "accuracy"))
+
+final_wf <- finalize_workflow(knn_workflow,
+                               select_best(knn_cv_tune, metric = "roc_auc"))
+
+
+
+# ------------- fitting --------------------
+
+train_fit <- fit(final_wf, audio_train) # fit the KNN model to the training set
+
+train_predict <- predict(object = train_fit, new_data = audio_train) %>% # predict the training set
+  bind_cols(audio_train) |>   # bind training set column to prediction
+  relocate(collection, .before = .pred_class)
+# | 
+#   mutate(collection = as.factor(collection))
+
+# train_predict2 <- predict(object = train_fit, new_data = audio_train, type = "prob") %>% # predict the training set
+#   bind_cols(audio_train) |>  # bind training set column to prediction
+#   relocate(collection, .before = .pred_Anna)
+
+
+test_predict <- predict(object = train_fit,  new_data = audio_test) |>  # get prediction probabilities for test 
+  bind_cols(audio_test) |>  # bind to testing column, if you don't bind, 
+  mutate(collection = as.factor(collection)) |> 
+  relocate(collection, .before = .pred_class)
+
+# test_predict2 <- predict(train_fit, audio_test, type = "prob") %>% # get testing prediction
+#   bind_cols(audio_test) %>%  # bind to testing column
+#   mutate(collection = as.factor(collection))
+
+
+
+
+# ------------ 
+# Fitting our final workflow
+final_fit <- final_wf |>
+  fit(data = audio_train)
+# best k:  40, then 14
+
+# predicting onto training data
+
+audio_pred <- final_fit |>
+  predict(new_data = audio_test)
+
+# Write over 'final_fit' with this last_fit() approach
+final_fit <- final_wf |>
+  last_fit(audio_split) # takes an rsplit object
+
+# Collect metrics on the test data!
+final_fit |> collect_metrics() 
+
+
+
+
+```
+
+
+
+```{r}
+accuracy(train_predict, truth = collection, estimate = .pred_class) # get training accuracy
+
+
+accuracy(test_predict, truth = collection, estimate = .pred_class) # get testing accuracy
+
+#sensitivity(test_predict, truth = test_predict$collection, estimate = test_predict$.pred_class)
+#specificity(test_predict, truth = collection, estimate = .pred_class)
+#sensitivity(train_predict, truth = collection, estimate = .pred_class)
+# specificity(train_predict, truth = collection, estimate = .pred_class)
+
+
+
+train_predict |> 
+  conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) #rotate axis labels
+
+test_predict |> 
+  conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) #rotate axis labels
+
+
+autoplot(knn_cv_tune) + # plot cv results for parameter tuning
+  theme_bw()
+```
+
+
+
+```{r decision-tree}
+
+# data split ---
+# audio_split <- initial_split(combined_audio_df, 0.75)
+#  we did all of this earlier
+# audio_train <- training(audio_split)
+# audio_test <- testing(audio_split)
+
+
+# ------- make recipe -----------------
+tree_rec <- recipe(collection ~ . ,
+                    data = audio_train) |>
+  step_dummy(all_nominal_predictors(),
+             one_hot = TRUE) |> 
+  # scale and center them --- some algorithms require scaling and centering (normalizing) -- not all, but it's a good thing to process all data like this (reducing outliers) -- random forest not required, but a "why not"
+  step_normalize(all_numeric_predictors()) # or all numeric, minus all outcomes
+
+# ------- build decision tree -----------
+tree_spec_tune <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(), 
+  min_n = tune() 
+) |> 
+  set_engine("rpart") |> 
+  set_mode("classification")
+
+
+tree_grid <- grid_regular(dials::cost_complexity(), 
+                          tree_depth(),
+                          min_n(),
+                          levels = 5)
+# tree_grid
+
+# tune model
+wf_tree_tune <- workflow() |> 
+  add_recipe(tree_rec) |> 
+  add_model(tree_spec_tune)
+
+# set up cv fold 
+genre_cv <- audio_train |> 
+  vfold_cv(v = 10)
+
+
+doParallel::registerDoParallel() #build trees in parallel
+
+system.time(
+  tree_rs <- tune_grid(
+    # could also replace w workflow
+    wf_tree_tune,
+    resamples = genre_cv,
+    grid = tree_grid, # 125 parameter combinations
+    metrics = metric_set(accuracy) # tune based on accuracy
+  )
+)
+# tree_rs
+
+
+# visualize to examine how different parameter configurations relate to accuracy 
+autoplot(tree_rs) + theme_bw() + scale_colour_viridis_d()
+# seems like a tree depth of 4 is typically best
+
+# finalize workflow 
+final_tree <- finalize_workflow(wf_tree_tune, select_best(tree_rs))
+# final_tree
+
+# ----- Fit model -----------------------
+
+#similar functions here.
+final_tree_fit <-  fit(final_tree, data = audio_train)
+
+#last_fit() # fit on the training data, but then also evaluates on the test data 
+
+final_tree_result <- last_fit(final_tree, # made with finalize_workflow
+                              audio_split) # fit col to predict col w the testing data
+
+final_tree_result$.predictions
+
+predict_data = as.data.frame(final_tree_result$.predictions) |> 
+  bind_cols(audio_test)
+
+# get accuracy, roc_auc
+final_tree_result$.metrics
+
+library(vip) #variable importance
+
+# visualize most important predictors
+final_tree_fit |> 
+  vip(geom = "col",
+      aesthetics = list(fill = "midnightblue", 
+                        alpha = 0.8)) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme_bw()
+
+ggplot() +
+  geom_boxplot(data = predict_data, aes(x = .pred_class, duration_ms)) +
+  theme_bw()
+
+
+```
+
+
+3.  bagged tree (Week 6)
+    -   bag_tree()
+    -   Use the "times =" argument when setting the engine during model specification to specify the number of trees. The rule of thumb is that 50-500 trees is usually sufficient. The bottom of that range should be sufficient here.
+4.  random forest (Week 6)
+    -   rand_forest()
+    -   m_try() is the new hyperparameter of interest for this type of model. Make sure to include it in your tuning process
+    
+    
+```{r bagged-tree}
+
+
+
+
+
+
+```
+
+
+```{r random-forest}
+
+
+
+
+
+
+
+```
+
+
+
+Compare model performance:
+
+"Use appropriate performance evaluation metric(s) for this classification task. A table would be a good way to display your comparison. Use at least one visualization illustrating your model results."
+
+
+```{r}
+
+
+```
+

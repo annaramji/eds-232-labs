@@ -35,7 +35,7 @@ trees_dat<- read_csv(file = "https://raw.githubusercontent.com/MaRo406/eds-232-m
 > Question 1: Recode all the predictors to a zero_based integer form
 
 ```{r}
-set.seed(123)
+#set.seed(123)
 
 trees_dat <- trees_dat |> 
   select(-...1) |> 

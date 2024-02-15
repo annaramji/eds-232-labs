@@ -1,0 +1,229 @@
+---
+title: "Lab5_Demo2"
+author: "Anna Ramji"
+date: "2023-02-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidymodels)
+library(vip) #variable importance
+library(here)
+```
+
+
+```{r}
+kaggle_dat <- read_csv(here("lab5", "data", "genres_v2.csv"))
+unique(kaggle_dat$genre)
+table(kaggle_dat$genre)
+
+#Removing inappropriate columns and selecting trap and Hiphop as the two genres here and making case consistent
+
+genre_dat <- kaggle_dat %>%
+  # remove unnecessary columns
+  select(-c(type, uri, track_href, analysis_url, `Unnamed: 0`, title, tempo, id, song_name)) %>%
+  filter(genre == "Hiphop"|genre == "Rap") %>%
+                            # column, oldname, newname
+  mutate(genre = str_replace(genre, "Hiphop", "hiphop")) %>%
+  mutate(genre = str_replace(genre, "Rap", "rap")) %>%
+  mutate(genre = as.factor(genre))
+```
+
+```{r}
+##split the data
+genre_split <- initial_split(genre_dat) # default 75% 
+genre_train <- training(genre_split)
+genre_test <- testing(genre_split)
+```
+
+```{r recipe}
+#Preprocess the data
+genre_rec <- recipe(genre ~ . ,
+                    data = genre_train) |>
+  step_dummy(all_nominal_predictors(),
+             one_hot = TRUE) |> 
+  # scale and center them --- some algorithms require scaling and centering (normalizing) -- not all, but it's a good thing to process all data like this (reducing outliers) -- random forest not required, but a "why not"
+  step_normalize(all_numeric_predictors()) # or all numeric, minus all outcomes
+
+ 
+```
+
+Set up a decision tree specification. Note: the cost_complexity parameter is a pruning penalty parameter that controls how much we penalize the number of terminal nodes in the tree.  It's conceptually similar to lambda from regularized regression.
+
+```{r tree_specification}
+tree_spec_fixed <- decision_tree(
+  # could also set them to tune() -- if not included, set to default
+  # here we'll set them to specific values 
+  cost_complexity = 0.1, # ask about this 
+  tree_depth = 4, # tree has to have 4 levels of nodes
+  min_n = 11 # minimum number of data poitnsin a node that are required for the node to be split further
+  # has to consider 11 out of the 12 variables to minimize error, goes from there 
+) |> 
+  set_engine("rpart") |> 
+  set_mode("classification")
+  
+  
+```
+
+But, as usual, we don't want just any old values for our hyperparameters, we want optimal values.
+```{r}
+#new spec, tell the model that we are tuning hyperparams
+tree_spec_tune <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(), 
+  min_n = tune() 
+) |> 
+  set_engine("rpart") |> 
+  set_mode("classification")
+
+
+tree_grid <- grid_regular(dials::cost_complexity(), 
+                          tree_depth(),
+                          min_n(),
+                          levels = 5)
+tree_grid
+```
+note: this grid output is for the tune() one (already tuned, unlike our first specified one)
+
+which we'd need to tune w cross-validation, run on specified parameters to get an OOB estimate for the tune() one
+
+randomly draws 5 from 1-15
+1, 4, 8, 11, 15
+
+tree depth that's required - 1st set is only 1 level, then 4, 8, 11, 15 
+
+
+
+```{r workflow_tree}
+# for model that needs to be tunes
+wf_tree_tune <- workflow() |> 
+  add_recipe(genre_rec) |> 
+  add_model(tree_spec_tune)
+  
+```
+
+```{r resampling}
+#set up k-fold cv. This can be used for all the algorithms
+genre_cv <- genre_train |> 
+  vfold_cv(v = 10)
+
+# 10 diff cross validation folds
+genre_cv
+
+```
+
+```{r doParallel}
+# register the parallel backend with the foreach package.
+doParallel::registerDoParallel() #build trees in parallel, as opposed to sequentially, so it doesn't take so long to run (make models go faster)
+#200s
+
+# system.time(
+#   
+#   tree_rs <- tune_grid(
+#     # could also replace w workflow
+#     tree_spec_tune,
+#     genre ~ . ,
+#     
+#   )
+#   
+# )
+
+
+system.time(
+  
+  tree_rs <- tune_grid(
+    # could also replace w workflow
+    wf_tree_tune,
+    resamples = genre_cv,
+    grid = tree_grid, # 125 parameter combinations
+    metrics = metric_set(accuracy) # tune based on accuracy
+    
+  )
+  
+)
+
+
+tree_rs
+```
+Use autoplot() to examine how different parameter configurations relate to accuracy 
+```{r autoplot}
+autoplot(tree_rs) + theme_bw() + scale_colour_viridis_d()
+
+
+```
+
+```{r select_hyperparam}
+show_best(tree_rs)
+
+select_best(tree_rs)
+```
+
+We can finalize the model specification where we have replaced the tune functions with optimized values.
+
+```{r final_tree_spec}
+final_tree <- finalize_workflow(wf_tree_tune, select_best(tree_rs))
+
+
+final_tree
+```
+
+This model has not been fit yet though.
+
+```{r final_tree_fit}
+#similar functions here.
+final_tree_fit <-  fit(final_tree, data = genre_train)
+
+###
+#last_fit() # fit on the training data, but then also evaluates on the test data 
+
+final_tree_result <- last_fit(final_tree, # made with finalize_workflow
+                              genre_split) # fit col to predict col w the testing data
+
+final_tree_result$.predictions
+
+predict_data = as.data.frame(final_tree_result$.predictions) |> 
+  bind_cols(genre_test)
+
+# get accuracy, roc_auc
+final_tree_result$.metrics
+```
+
+#Visualize variable importance
+```{r tree_vip}
+final_tree_fit |> 
+  vip(geom = "col",
+      aesthetics = list(fill = "midnightblue", 
+                        alpha = 0.8)) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme_bw()
+
+vip(final_tree_fit, num_features = 12, bar = FALSE,
+    geom = "point") + theme_bw()
+
+
+
+ggplot() +
+  geom_boxplot(data = predict_data, aes(x = .pred_class, duration_ms)) +
+  theme_bw()
+
+ggplot() +
+  geom_boxplot(data = predict_data, aes(x = .pred_class, danceability)) +
+  theme_bw()
+
+ggplot() +
+  geom_boxplot(data = predict_data, aes(x = .pred_class, acousticness)) + # not much diff, reflective of the variable importance plot
+  theme_bw()
+```
+
+
+
+
+```{r}
+
+
+
+```
+

@@ -1,19 +1,19 @@
 ---
 title: "Lab5_Demo"
 author: "Mateo Robbins"
-date: "2024-02-07"
+date: "2024-02-08"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(dplyr)    
-library(ggplot2) #great plots
-library(rsample)  #data splitting 
-library(recipes) #data preprocessing
-library(skimr) #data exploration
-library(tidymodels) #re-entering tidymodel mode
-library(kknn) #knn modeling
+library(ggplot2) # great plots
+library(rsample)  # data splitting 
+library(recipes) # ata preprocessing
+library(skimr) # data exploration
+library(tidymodels) # re-entering tidymodel mode
+library(kknn) # knn modeling
 ```
 
 ###k-nearest neighbor in tidymodels
