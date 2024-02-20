@@ -445,7 +445,7 @@ knn_conf_mat <- test_predict_roc |>
   autoplot(type = "heatmap") + #plot confusion matrix with heatmap
   theme_bw() + #change theme
   theme(axis.text.x = element_text(angle = 30, hjust=1)) + #rotate axis labels
-  labs(title = "KNN Model: Test Prediction Confusion Matrix")
+  labs(title = "KNN Model")
 
 
 autoplot(knn_cv_tune) + # plot cv results for parameter tuning
@@ -580,7 +580,7 @@ tree_conf_mat <- tree_test_predict |>
   autoplot(type = "heatmap") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
-  labs(title = "Decision Tree Model: Test Prediction Confusion Matrix")
+  labs(title = "Decision Tree")
 # tree_conf_mat
 ```
 
@@ -689,7 +689,7 @@ bag_conf_mat <- bag_test_predict |>
   autoplot(type = "heatmap") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
-  labs(title = "Bag Tree Model: Test Prediction Confusion Matrix")
+  labs(title = "Bag Tree")
 
 ```
 
@@ -821,7 +821,7 @@ rf_conf_mat <- test_predict_rf_roc_auc |>
 #  scale_fill_manual(breaks = c(0, 10, 20, 30, 40)) +
   theme(axis.text.x = element_text(angle = 30, hjust=1)) +
   #rotate axis labels
-  labs(title = "Random Forest: Prediction Confusion Matrix")
+  labs(title = "Random Forest")
 rf_conf_mat
 
 rf_conf_mat_acc <- test_predict_rf_acc |> 
@@ -874,11 +874,24 @@ This table shows us that the best performing model for our data is the Random Fo
 
 
 ```{r confusion-matrices}
-knn_conf_mat
-tree_conf_mat
-bag_conf_mat
-rf_conf_mat
+(knn_conf_mat + tree_conf_mat) / (bag_conf_mat + rf_conf_mat)
 
+performance_tidy <- performance_metrics |> 
+  rename(metric = .metric,
+         estimate = .estimate)
 
+ggplot(data = performance_tidy) +
+  geom_bar(aes(x = model, 
+               y = estimate,
+               fill = metric),
+           stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("lightskyblue", "seagreen")) +
+  theme_bw() +
+  labs(x = "Model",
+       y = "Estimate",
+       fill = "Metric",
+       title = "Comparison of Model Performance")
+  
+  
 ```
 
