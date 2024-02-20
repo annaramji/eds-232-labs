@@ -19,8 +19,12 @@ You have two options for completing this lab.
 
 **Option 2**: **Classify by genres**. Build models that predict which genre a song belongs to. This will use a pre-existing Spotify dataset available from Kaggle.com (<https://www.kaggle.com/datasets/mrmorj/dataset-of-songs-in-spotify>)
 
-```{r}
+```{r setup}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+```{r packages, message=FALSE, warning=FALSE}
 library(spotifyr) #API interaction
 library(tidyverse)
 library(tidymodels)
@@ -231,6 +235,8 @@ library(patchwork)
 dance_plot / energy_plot / acc_plot
 
 ```
+
+
 Our music appears to be relatively equally danceable, and while I have listened to the song with the highest energy (Panama - 2015 Remaster (a Van Halen classic!)), Sam's music taste seems to have more high-energy songs, whereas my taste is roughly normally distributed. I also appear to like more acoustic music than Sam. 
 
 ### **Modeling**
@@ -317,7 +323,7 @@ cv_folds <- vfold_cv(audio_train, v = 10)
 
 knn_cv_tune <- knn_workflow |> 
   tune_grid(resamples = cv_folds,
-            grid = 10) 
+            grid = data.frame(neighbors = c(1, 5, seq(10, 100, 10)))) 
 
 # discussion way ----
 # Fit the workflow on our predefined folds and a grid of hyperparameters
@@ -422,10 +428,8 @@ knn_metrics_roc <- final_fit_roc |>
 
 
 ```{r knn-viz}
-accuracy(train_predict, truth = collection, estimate = .pred_class) # get training accuracy
-
-
-accuracy(test_predict, truth = collection, estimate = .pred_class) # get testing accuracy
+# accuracy(train_predict, truth = collection, estimate = .pred_class) # get training accuracy
+# accuracy(test_predict, truth = collection, estimate = .pred_class) # get testing accuracy
 
 # sensitivity(test_predict, truth = collection, estimate = .pred_class)
 # specificity(test_predict, truth = collection, estimate = .pred_class)
@@ -447,9 +451,10 @@ knn_conf_mat <- test_predict_roc |>
   theme(axis.text.x = element_text(angle = 30, hjust=1)) + #rotate axis labels
   labs(title = "KNN Model")
 
-
-autoplot(knn_cv_tune) + # plot cv results for parameter tuning
+neighbors_plot <- autoplot(knn_cv_tune) + # plot cv results for parameter tuning
   theme_bw()
+
+# neighbors_plot
 ```
 
 
@@ -700,7 +705,6 @@ look at documentation for ranger
 
 # already split into test and train datasets
 
-
 # using the same decision tree recipe
 # tree_recipe <- recipe(collection ~ ., 
 #                     # outcome variable is whose collection the song is in
@@ -708,7 +712,7 @@ look at documentation for ranger
 #   step_dummy(all_nominal_predictors(), one_hot = TRUE) |>  
 #   step_normalize(all_numeric_predictors())   # scale and center numeric predictors
 
-# model
+# define model
 rf_model <- rand_forest(
   mtry = tune(),
   trees = tune()
@@ -716,12 +720,10 @@ rf_model <- rand_forest(
   set_engine("ranger") |> 
   set_mode("classification") # can do reg or class
 
-# workflow
-rf_workflow_tune <- workflow() |> 
+# create workflow
+rf_workflow <- workflow() |> 
   add_model(rf_model) |> 
   add_recipe(recipe = tree_rec)
-  
-
 
 # --------------- Resampling ---------------------
 
@@ -750,7 +752,6 @@ rf_cv_tune <- rf_workflow |>
 #     metrics = metric_set(accuracy) # tune based on accuracy
 #   )
 # )
-
 
 # autoplot(rf_cv_tune)
 
@@ -809,7 +810,7 @@ accuracy(test_predict_rf_acc, truth = collection, estimate = .pred_class)
 rf_metrics <- rf_final_fit |> collect_metrics() |> 
   mutate(model = "Random Forest")
 
-rf_metrics
+# rf_metrics
 ```
 
 
@@ -854,16 +855,18 @@ performance_metrics <- rbind(knn_metrics_roc,
                              rf_metrics
                              ) |> 
   relocate(model, .before = .metric) |> 
-  select(-.config, -.estimator)
+  select(-.config, -.estimator) |> 
+  rename(estimate = .estimate,
+         metric = .metric)
 
 #performance_metrics |> knitr::kable()
 performance_table <- performance_metrics |> gt::gt(
-  rowname_col = ".metric",
+  rowname_col = "metric",
   groupname_col = "model",
   row_group_as_column = TRUE
 ) |> 
   gt::fmt_number(
-    columns = ".estimate",
+    columns = "estimate",
     decimals = 4
   ) |> 
   gt::opt_stylize(style = 2,
@@ -874,13 +877,14 @@ This table shows us that the best performing model for our data is the Random Fo
 
 
 ```{r confusion-matrices}
-(knn_conf_mat + tree_conf_mat) / (bag_conf_mat + rf_conf_mat)
+# using patchwork to display all confusion matrices
+((knn_conf_mat + theme(legend.position = "none")) + 
+   (tree_conf_mat + theme(legend.position = "none"))) /
+  ((bag_conf_mat  + theme(legend.position = "none")) +
+    (rf_conf_mat + theme(legend.position = "none")))
 
-performance_tidy <- performance_metrics |> 
-  rename(metric = .metric,
-         estimate = .estimate)
-
-ggplot(data = performance_tidy) +
+# bar plot of model performance metrics 
+comparison_bar_plot <- ggplot(data = performance_metrics) +
   geom_bar(aes(x = model, 
                y = estimate,
                fill = metric),
@@ -892,6 +896,6 @@ ggplot(data = performance_tidy) +
        fill = "Metric",
        title = "Comparison of Model Performance")
   
-  
+comparison_bar_plot  
 ```
 
