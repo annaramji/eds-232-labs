@@ -28,6 +28,12 @@ library(here)
 library(parsnip)
 library(caret)
 library(rpart.plot) # for decision trees
+library(xgboost) #package for boosted trees
+library(ranger) #package for random forest
+library(patchwork)
+library(baguette)
+library(vip) #variable importance
+
 ```
 
 Client ID and Client Secret are required to create and access token that is required to interact with the API. You can set them as system values so we don't have to do provide them each time.
@@ -48,10 +54,14 @@ access_token <- get_spotify_access_token() #takes ID and SECRET, sends to Spotif
 You can use get_my_saved_tracks() to request all your liked tracks. It would be good if you had at least 150-200 liked tracks so the model has enough data to work with. If you don't have enough liked tracks, you can instead use get_my_recently_played(), and in that case grab at least 500 recently played tracks if you can.
 
 ```{r}
-my_tracks_1 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 0)
-my_tracks_2 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 50)
-my_tracks_3 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 100)
-my_tracks_4 <- get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = 150)
+my_tracks_1 <- get_my_saved_tracks(authorization = authorization_code,
+                                   limit = 50, offset = 0)
+my_tracks_2 <- get_my_saved_tracks(authorization = authorization_code,
+                                   limit = 50, offset = 50)
+my_tracks_3 <- get_my_saved_tracks(authorization = authorization_code,
+                                   limit = 50, offset = 100)
+my_tracks_4 <- get_my_saved_tracks(authorization = authorization_code,
+                                   limit = 50, offset = 150)
 
 my_tracks <- rbind(my_tracks_1, my_tracks_2, my_tracks_3, my_tracks_4)
 ```
@@ -60,9 +70,40 @@ my_tracks <- rbind(my_tracks_1, my_tracks_2, my_tracks_3, my_tracks_4)
 The Spotify API returns a dataframe of tracks and associated attributes. However, it will only return up to 50 (or 20) tracks at a time, so you will have to make multiple requests. Use a function to combine all your requests in one call.
 
 ```{r}
+all_my_tracks <- data.frame()
+
+# more_tracks <- function(x) {
+#   for (i in x){
+#     
+#     new_tracks <- get_my_saved_tracks(authorization = authorization_code,
+#                       limit = 50,
+#                       offset = (i - 1) * 50)
+#     
+#     # save tracks to dataframe
+#     all_my_tracks |> rbind(new_tracks)
+#   }
+#   
+# }
+
+# more_tracks(x = seq(1:4))
 
 
+# for (i in seq(1:4)){
+#     new_tracks <- get_my_saved_tracks(authorization = authorization_code,
+#                       limit = 50,
+#                       offset = (i - 1) * 50)
+#     # save tracks to dataframe
+#     all_my_tracks <- rbind(new_tracks)
+#   }
+# 
 
+# all_my_tracks <- ceiling(get_my_saved_tracks(include_meta_info = TRUE)[['total']] / 50) |> 
+#   seq() |> 
+#   map(function(x) {
+#     get_my_saved_tracks(authorization = authorization_code, limit = 50, offset = (x - 1) * 50)
+#   }) |> 
+#   reduce(rbind) |> 
+#   write_rds('raw_all_my_tracks.rds')
 
 ```
 
@@ -75,7 +116,7 @@ audio1 <- get_track_audio_features(my_tracks$track.id[1:100])
 audio2 <- get_track_audio_features(my_tracks$track.id[101:200])
 
 audio_features <- rbind(audio1, audio2)
-
+# audio_features
 ```
 
 
@@ -129,14 +170,14 @@ For example: What are the most danceable tracks in your dataset? What are some d
 
 
 ```{r}
+# Danceability -------------
 most_danceable <- combined_audio_df |> 
   filter(danceability == max(danceability)) |> 
-  select(track.name, danceability)
+  select(track.name, danceability, collection)
 
 most_danceable
 
-
-ggplot(data = combined_audio_clean) +
+dance_plot <- ggplot(data = combined_audio_clean) +
   geom_density(aes(x = danceability, 
                   # y = tempo,
                    fill = collection),
@@ -146,8 +187,51 @@ ggplot(data = combined_audio_clean) +
        y = "Density",
        fill = "Collection",
        title = "Danceability Density plot per Collection")
-```
 
+
+# Energy --------------
+
+most_energy <- combined_audio_df |> 
+  filter(energy == max(energy)) |> 
+  select(track.name, energy, collection)
+
+most_energy
+
+energy_plot <- ggplot(data = combined_audio_clean) +
+  geom_density(aes(x = energy, 
+                  # y = tempo,
+                   fill = collection),
+               alpha = 0.5) +
+  theme_bw() +
+  labs(x = "Energy",
+       y = "Density",
+       fill = "Collection",
+       title = "Energy Density plot per Collection")
+
+# Acousticness --------------
+
+most_acc <- combined_audio_df |> 
+  filter(acousticness == max(acousticness)) |> 
+  select(track.name, acousticness, collection)
+
+most_acc
+
+acc_plot <- ggplot(data = combined_audio_clean) +
+  geom_density(aes(x = acousticness, 
+                  # y = tempo,
+                   fill = collection),
+               alpha = 0.5) +
+  theme_bw() +
+  labs(x = "Acousticness",
+       y = "Density",
+       fill = "Collection",
+       title = "Acousticness Density plot per Collection")
+
+library(patchwork)
+dance_plot / energy_plot / acc_plot
+
+```
+Our music appears to be relatively equally danceable, and while I have listened to the song with the highest energy (Panama - 2015 Remaster (a Van Halen classic!)), Sam's music taste seems to have more high-energy songs, whereas my taste is roughly normally distributed. I also appear to like more acoustic music than Sam. 
 
 ### **Modeling**
 
@@ -165,6 +249,18 @@ You will eventually create four final candidate models:
 3.  bagged tree (Week 6)
     -   bag_tree()
     -   Use the "times =" argument when setting the engine during model specification to specify the number of trees. The rule of thumb is that 50-500 trees is usually sufficient. The bottom of that range should be sufficient here.
+    other note: set_engine()
+    engine = ""
+    
+    
+ 
+    
+    
+   option:  trees = 
+    bagger
+    times = 50
+    ?details_bag_tree_rpart
+    
 4.  random forest (Week 6)
     -   rand_forest()
     -   m_try() is the new hyperparameter of interest for this type of model. Make sure to include it in your tuning process
@@ -185,9 +281,11 @@ Use appropriate performance evaluation metric(s) for this classification task. A
 
 ```{r knn-model}
 set.seed(123)
-# --------------- preprocessing ---------------------
-# split into testing and training sets
+# --------------- Preprocessing ---------------------
+# I already classified the "collection" column to be factored earlier
+# and stored this cleaned, selected df as combined_audio_clean
 
+# split into testing and training sets
 audio_split <- initial_split(combined_audio_clean, 0.75)
 audio_train <- training(audio_split)
 audio_test <- testing(audio_split)
@@ -196,7 +294,7 @@ audio_test <- testing(audio_split)
 # ------------ recipe, model, workflow -------------------------
 knn_recipe <- recipe(collection ~ ., # outcome variable is whose collection the song is in
                   data = audio_train) |> 
-  step_dummy(all_nominal_predictors()) |>  
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>  
   step_normalize(all_numeric_predictors()) |>  # scale and center numeric predictors
   prep()
 
@@ -211,53 +309,68 @@ knn_workflow <- workflow() |>  # create workflow
   add_model(knn_model) |> 
   add_recipe(knn_recipe)
 
-# --------------- resampling ---------------------
+# --------------- Resampling ---------------------
 
 cv_folds <- vfold_cv(audio_train, v = 10)
 
-# --------------- tuning ------------------------------
+# --------------- Tuning ------------------------------
 
 knn_cv_tune <- knn_workflow |> 
   tune_grid(resamples = cv_folds,
-            grid = 10) # use cv to get nearest neighbors
+            grid = 10) 
 
 # discussion way ----
 # Fit the workflow on our predefined folds and a grid of hyperparameters
-fit_knn_cv <- knn_workflow |>
-  tune_grid(
-    cv_folds,
-    grid = data.frame(neighbors = c(1, 5, seq(10, 100, 10)))
-  )
+# fit_knn_cv <- knn_workflow |>
+#   tune_grid(
+#     cv_folds,
+#     grid = data.frame(neighbors = c(1, 5, seq(10, 100, 10)))
+#   )
 
-# running 60 times
-# 5 folds, for each of 12 different sets of neighbors
-# 12 diff values of k we want to try
 
-# The final workflow for our KNN model. Finalize_workflow takes a workflow and a set of parameters.  In this case, that set is just the best value of k
-knn_final_accuracy <- knn_workflow |>
-  finalize_workflow(select_best(knn_cv_tune, metric = "accuracy"))
+# The final workflow for our KNN model
 
+# knn_final_accuracy <- knn_workflow |>
+#   finalize_workflow(select_best(knn_cv_tune, metric = "accuracy"))
+
+# setting final workflow, defining best NN as optimal for roc_auc 
 final_wf <- finalize_workflow(knn_workflow,
-                               select_best(knn_cv_tune, metric = "roc_auc"))
+                               select_best(knn_cv_tune,
+                                           metric = "accuracy"))
 
-
+final_wf_roc_auc <- finalize_workflow(knn_workflow,
+                               select_best(knn_cv_tune,
+                                           metric = "roc_auc"))
 
 # ------------- fitting --------------------
 
 train_fit <- fit(final_wf, audio_train) # fit the KNN model to the training set
+train_fit_roc <- fit(final_wf_roc_auc, audio_train) # for roc_auc metric 
 
-train_predict <- predict(object = train_fit, new_data = audio_train) %>% # predict the training set
+train_predict <- predict(object = train_fit, new_data = audio_train) |>  # predict the training set
   bind_cols(audio_train) |>   # bind training set column to prediction
-  relocate(collection, .before = .pred_class)
+  relocate(collection, .before = .pred_class) # for easier comparison 
 # | 
 #   mutate(collection = as.factor(collection))
+
+train_predict_roc <- predict(object = train_fit_roc, new_data = audio_train) |>  # predict the training set
+  bind_cols(audio_train) |>   # bind training set column to prediction
+  relocate(collection, .before = .pred_class) # for easier comparison 
 
 # train_predict2 <- predict(object = train_fit, new_data = audio_train, type = "prob") %>% # predict the training set
 #   bind_cols(audio_train) |>  # bind training set column to prediction
 #   relocate(collection, .before = .pred_Anna)
 
+# for accuracy
+test_predict <- predict(object = train_fit,
+                        new_data = audio_test) |>  # get prediction probabilities for test 
+  bind_cols(audio_test) |>  # bind to testing column, if you don't bind, 
+  mutate(collection = as.factor(collection)) |> 
+  relocate(collection, .before = .pred_class)
 
-test_predict <- predict(object = train_fit,  new_data = audio_test) |>  # get prediction probabilities for test 
+# for roc_auc
+test_predict_roc <- predict(object = train_fit_roc,
+                            new_data = audio_test) |>  # get prediction probabilities for test 
   bind_cols(audio_test) |>  # bind to testing column, if you don't bind, 
   mutate(collection = as.factor(collection)) |> 
   relocate(collection, .before = .pred_class)
@@ -273,51 +386,66 @@ test_predict <- predict(object = train_fit,  new_data = audio_test) |>  # get pr
 # Fitting our final workflow
 final_fit <- final_wf |>
   fit(data = audio_train)
-# best k:  40, then 14
+#
+# for roc_auc
+final_fit_roc <- final_wf_roc_auc |> 
+  fit(data = audio_train)
 
-# predicting onto training data
 
+# predicting onto testing data
 audio_pred <- final_fit |>
-  predict(new_data = audio_test)
+  predict(new_data = audio_test) 
+
+# for roc_auc
+audio_pred_roc <- final_fit_roc |>
+  predict(new_data = audio_test) 
 
 # Write over 'final_fit' with this last_fit() approach
 final_fit <- final_wf |>
   last_fit(audio_split) # takes an rsplit object
 
+# for roc_auc
+final_fit_roc <- final_wf_roc_auc |>
+  last_fit(audio_split) # takes an rsplit object
+
 # Collect metrics on the test data!
-final_fit |> collect_metrics() 
+knn_metrics <- final_fit |> collect_metrics() 
+# knn_metrics
 
-
-
-
+# for roc_auc
+knn_metrics_roc <- final_fit_roc |> 
+  collect_metrics() |> 
+  mutate(model = "KNN")
+# knn_metrics_roc
 ```
 
 
 
-```{r}
+```{r knn-viz}
 accuracy(train_predict, truth = collection, estimate = .pred_class) # get training accuracy
 
 
 accuracy(test_predict, truth = collection, estimate = .pred_class) # get testing accuracy
 
-#sensitivity(test_predict, truth = test_predict$collection, estimate = test_predict$.pred_class)
-#specificity(test_predict, truth = collection, estimate = .pred_class)
-#sensitivity(train_predict, truth = collection, estimate = .pred_class)
+# sensitivity(test_predict, truth = collection, estimate = .pred_class)
+# specificity(test_predict, truth = collection, estimate = .pred_class)
+# sensitivity(train_predict, truth = collection, estimate = .pred_class)
 # specificity(train_predict, truth = collection, estimate = .pred_class)
 
 
-
-train_predict |> 
+knn_train_conf_matrix <- train_predict |> 
   conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
   autoplot(type = "heatmap") + #plot confusion matrix with heatmap
   theme_bw() + #change theme
-  theme(axis.text.x = element_text(angle = 30, hjust=1)) #rotate axis labels
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) +  #rotate axis labels
+  labs(title = "KNN Model: Train Prediction Confusion Matrix")
 
-test_predict |> 
+knn_conf_mat <- test_predict_roc |> 
   conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
   autoplot(type = "heatmap") + #plot confusion matrix with heatmap
   theme_bw() + #change theme
-  theme(axis.text.x = element_text(angle = 30, hjust=1)) #rotate axis labels
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) + #rotate axis labels
+  labs(title = "KNN Model: Test Prediction Confusion Matrix")
 
 
 autoplot(knn_cv_tune) + # plot cv results for parameter tuning
@@ -327,7 +455,7 @@ autoplot(knn_cv_tune) + # plot cv results for parameter tuning
 
 
 ```{r decision-tree}
-
+# ---------- Preprocessing -------------------------
 # data split ---
 # audio_split <- initial_split(combined_audio_df, 0.75)
 #  we did all of this earlier
@@ -343,7 +471,12 @@ tree_rec <- recipe(collection ~ . ,
   # scale and center them --- some algorithms require scaling and centering (normalizing) -- not all, but it's a good thing to process all data like this (reducing outliers) -- random forest not required, but a "why not"
   step_normalize(all_numeric_predictors()) # or all numeric, minus all outcomes
 
+
+# ---------- Resampling and Tuning ---------------
+
+
 # ------- build decision tree -----------
+# tuning to best option for cc, depth, min_n
 tree_spec_tune <- decision_tree(
   cost_complexity = tune(),
   tree_depth = tune(), 
@@ -352,21 +485,22 @@ tree_spec_tune <- decision_tree(
   set_engine("rpart") |> 
   set_mode("classification")
 
-
+# make grid
 tree_grid <- grid_regular(dials::cost_complexity(), 
                           tree_depth(),
                           min_n(),
                           levels = 5)
 # tree_grid
 
-# tune model
+# tune model 
 wf_tree_tune <- workflow() |> 
   add_recipe(tree_rec) |> 
   add_model(tree_spec_tune)
 
+# Resampling ----
 # set up cv fold 
-genre_cv <- audio_train |> 
-  vfold_cv(v = 10)
+tree_cv <- audio_train |> 
+  vfold_cv(v = 10) # 10 fold cv
 
 
 doParallel::registerDoParallel() #build trees in parallel
@@ -375,7 +509,7 @@ system.time(
   tree_rs <- tune_grid(
     # could also replace w workflow
     wf_tree_tune,
-    resamples = genre_cv,
+    resamples = tree_cv,
     grid = tree_grid, # 125 parameter combinations
     metrics = metric_set(accuracy) # tune based on accuracy
   )
@@ -384,16 +518,17 @@ system.time(
 
 
 # visualize to examine how different parameter configurations relate to accuracy 
-autoplot(tree_rs) + theme_bw() + scale_colour_viridis_d()
+
+# autoplot(tree_rs) + theme_bw() + scale_colour_viridis_d()
 # seems like a tree depth of 4 is typically best
 
-# finalize workflow 
+# finalize workflow  -----
 final_tree <- finalize_workflow(wf_tree_tune, select_best(tree_rs))
 # final_tree
 
 # ----- Fit model -----------------------
 
-#similar functions here.
+# fit finalized workflow onto training data 
 final_tree_fit <-  fit(final_tree, data = audio_train)
 
 #last_fit() # fit on the training data, but then also evaluates on the test data 
@@ -401,29 +536,52 @@ final_tree_fit <-  fit(final_tree, data = audio_train)
 final_tree_result <- last_fit(final_tree, # made with finalize_workflow
                               audio_split) # fit col to predict col w the testing data
 
-final_tree_result$.predictions
+# final_tree_result$.predictions
 
-predict_data = as.data.frame(final_tree_result$.predictions) |> 
+predict_data <- as.data.frame(final_tree_result$.predictions) |> 
   bind_cols(audio_test)
 
-# get accuracy, roc_auc
-final_tree_result$.metrics
+tree_metrics <- final_tree_result |> 
+  collect_metrics() |> 
+  mutate(model = "Decision Tree")
 
-library(vip) #variable importance
+# get accuracy, roc_auc
+# final_tree_result$.metrics
+
 
 # visualize most important predictors
-final_tree_fit |> 
+important_preds_plot <- final_tree_fit |> 
   vip(geom = "col",
       aesthetics = list(fill = "midnightblue", 
                         alpha = 0.8)) +
   scale_y_continuous(expand = c(0,0)) +
   theme_bw()
+# duration_ms, acousticness, instrumentalness, energy, and loudness are the top 
+# predictors, with duration_ms, acoustincess, and instrumentalness being of
+# significantly higher importance than other predictors
 
-ggplot() +
+duration_pred_plot <- ggplot() +
   geom_boxplot(data = predict_data, aes(x = .pred_class, duration_ms)) +
   theme_bw()
 
+# on average, Sam listens to longer songs than Anna (me)
 
+
+tree_test_predict <- predict(object = final_tree_fit,
+                             new_data = audio_test) |>  # get pred probs 4 test 
+  bind_cols(audio_test) |>  # bind to testing column
+  mutate(collection = as.factor(collection)) |> 
+  relocate(collection, .before = .pred_class)
+
+
+# plotting confusion matrix
+tree_conf_mat <- tree_test_predict |> 
+  conf_mat(truth = collection, estimate = .pred_class) |> 
+  autoplot(type = "heatmap") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  labs(title = "Decision Tree Model: Test Prediction Confusion Matrix")
+# tree_conf_mat
 ```
 
 
@@ -436,25 +594,250 @@ ggplot() +
     
     
 ```{r bagged-tree}
+# ------------ Preprocessing -------------
+
+# split into testing and training sets (did this earlier)
+# audio_split <- initial_split(combined_audio_clean, 0.75)
+# audio_train <- training(audio_split)
+# audio_test <- testing(audio_split)
 
 
+# ------------ recipe, model, workflow -------------------------
+# recipe
+bag_recipe <- recipe(collection ~ ., # outcome variable is whose collection the song is in
+                  data = audio_train) |> 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>  
+  step_normalize(all_numeric_predictors())   # scale and center numeric predictors
+#   prep()
+
+# model
+bag_model <- bag_tree(
+  cost_complexity = tune(),
+  min_n = tune()) |> 
+  set_engine("rpart",
+             times = 50) |> # 50 times
+  set_mode("classification")
+
+# workflow 
+bag_wf_tune <- workflow() |> 
+  add_model(bag_model) |> 
+  add_recipe(bag_recipe)
+
+# --------------- Resampling ---------------------
+# specifying grid 
+bag_grid <- grid_regular(dials::cost_complexity(),
+                          min_n(),
+                          levels = 5)
 
 
+# same cv fold from earlier
+# tree_cv <- audio_train |> 
+#   vfold_cv(v = 10) # 10 fold cv
 
+# --------------- Tuning ------------------------------
+
+doParallel::registerDoParallel() #build trees in parallel
+
+system.time(
+  bag_rs <- tune_grid(
+    bag_wf_tune, # bag tree workflow here
+    resamples = tree_cv,
+    grid = bag_grid, # 125 parameter combinations
+    metrics = metric_set(roc_auc) # tune based on accuracy
+  )
+)
+
+# bag_rs
+
+# finalize workflow  -----
+final_bag <- finalize_workflow(bag_wf_tune, select_best(bag_rs))
+
+# -------- Fitting -------------
+# fit finalized workflow onto training data 
+final_bag_fit <-  fit(final_bag, data = audio_train)
+
+#last_fit() # fit on the training data, but then also evaluates on the test data 
+
+final_bag_result <- last_fit(final_bag, # made with finalize_workflow
+                             # fit col to predict col w the testing data
+                              audio_split) 
+
+# final_tree_result$.predictions
+
+predict_data_bag <- as.data.frame(final_bag_result$.predictions) |> 
+  bind_cols(audio_test)
+
+bag_metrics <- final_bag_result |> 
+  collect_metrics() |> 
+  mutate(model = "Bag Tree")
+# bag_metrics
+
+# bag_train_predict <- predict(object = final_bag_fit,
+#                              new_data = audio_train) |> # get pred probs 4 test 
+#   bind_cols(audio_test) |>  # bind to testing column
+#   mutate(collection = as.factor(collection)) |> 
+#   relocate(collection, .before = .pred_class)
+
+bag_test_predict <- predict(object = final_bag_fit,
+                             new_data = audio_test) |>  # get pred probs 4 test 
+  bind_cols(audio_test) |>  # bind to testing column
+  mutate(collection = as.factor(collection)) |> 
+  relocate(collection, .before = .pred_class)
+
+bag_conf_mat <- bag_test_predict |> 
+  conf_mat(truth = collection, estimate = .pred_class) |> 
+  autoplot(type = "heatmap") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  labs(title = "Bag Tree Model: Test Prediction Confusion Matrix")
 
 ```
 
-
+look at documentation for ranger
 ```{r random-forest}
 
+# ------------ Preprocessing -------------
+
+# already split into test and train datasets
+
+
+# using the same decision tree recipe
+# tree_recipe <- recipe(collection ~ ., 
+#                     # outcome variable is whose collection the song is in
+#                   data = audio_train) |> 
+#   step_dummy(all_nominal_predictors(), one_hot = TRUE) |>  
+#   step_normalize(all_numeric_predictors())   # scale and center numeric predictors
+
+# model
+rf_model <- rand_forest(
+  mtry = tune(),
+  trees = tune()
+) |> 
+  set_engine("ranger") |> 
+  set_mode("classification") # can do reg or class
+
+# workflow
+rf_workflow_tune <- workflow() |> 
+  add_model(rf_model) |> 
+  add_recipe(recipe = tree_rec)
+  
+
+
+# --------------- Resampling ---------------------
+
+# same cv fold from earlier
+# tree_cv <- audio_train |> 
+#   vfold_cv(v = 10) # 10 fold cv
+
+# --------------- Tuning ------------------------------
+rf_cv_tune <- rf_workflow |>
+  tune_grid(resamples = tree_cv,
+            grid = 10) # use cross validation to tune mtry and trees parameters
+
+# specifying grid 
+# rf_grid <- grid_regular(dials::mtry(), # yields error, says mtry contains unknowns
+#                           trees(),
+#                           levels = 5)
+
+# 
+# doParallel::registerDoParallel() #build trees in parallel
+# 
+# system.time(
+#   rf_rs <- tune_grid(
+#     rf_workflow_tune, # random forest workflow here
+#     resamples = tree_cv,
+#     grid = rf_grid, # 125 parameter combinations
+#     metrics = metric_set(accuracy) # tune based on accuracy
+#   )
+# )
+
+
+# autoplot(rf_cv_tune)
+
+
+rf_best_acc <- show_best(rf_cv_tune, n = 1, metric = "accuracy")
+rf_best_roc_auc <- show_best(rf_cv_tune, n = 1, metric = "roc_auc")
+# rf_best_acc
+# rf_best_roc_auc
+
+# finalize workflow 
+rf_final_roc_auc <- finalize_workflow(rf_workflow, 
+                              select_best(rf_cv_tune, metric = "roc_auc"))
+
+rf_final_accuracy <- finalize_workflow(rf_workflow, 
+                              select_best(rf_cv_tune, metric = "accuracy"))
+
+# model fitting
+train_fit_rf <- fit(rf_final_roc_auc, audio_train) #fit the RF model to the training set
+
+train_fit_rf_acc <- fit(rf_final_accuracy, audio_train)
+
+# last fit from final wf
+# Write over 'final_fit' with this last_fit() approach
+rf_final_fit <- rf_final_roc_auc |>
+  last_fit(audio_split) # takes an rsplit object
+
+
+# get test predictions 
+test_predict_rf_roc_auc <- predict(train_fit_rf, audio_test) |>  # get prediction probabilities for test 
+  # gets predicted class .pred_class (same type as your truth class)
+  bind_cols(audio_test) |>   #bind to testing column
+  mutate(collection = as.factor(collection)) |> 
+  relocate(collection, .before = .pred_class)
+
+test_predict_rf_acc <- predict(train_fit_rf_acc, audio_test) |>  # get prediction probabilities for test 
+  # gets predicted class .pred_class (same type as your truth class)
+  bind_cols(audio_test) |>   #bind to testing column
+  mutate(collection = as.factor(collection)) |> 
+  relocate(collection, .before = .pred_class)
+
+
+# get probability, not class
+test_predict2_rf <- predict(train_fit_rf, audio_test, type = "prob") |>  # get testing prediction
+  bind_cols(audio_test) |>  #bind to testing column
+  mutate(collection = as.factor(collection)) |> 
+  relocate(collection, .before = .pred_Anna)
+
+# get accuracy of testing prediction
+accuracy(test_predict_rf_roc_auc, truth = collection, estimate = .pred_class) 
+accuracy(test_predict_rf_acc, truth = collection, estimate = .pred_class) 
+
+# test_roc_auc_rf <- roc_curve(data = test_predict2_rf, truth = collection, .pred_Anna, .pred_Sam)
 
 
 
+rf_metrics <- rf_final_fit |> collect_metrics() |> 
+  mutate(model = "Random Forest")
+
+rf_metrics
+```
 
 
+```{r}
+rf_conf_mat <- test_predict_rf_roc_auc |> 
+  conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+#  scale_fill_manual(breaks = c(0, 10, 20, 30, 40)) +
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+  #rotate axis labels
+  labs(title = "Random Forest: Prediction Confusion Matrix")
+rf_conf_mat
+
+rf_conf_mat_acc <- test_predict_rf_acc |> 
+  conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+  #rotate axis labels
+  labs(title = "Random Forest: Test Prediction Confusion Matrix")
+# rf_conf_mat_acc
 
 ```
 
+
+Random forest: random number/subset of features used at every split and the best split feature from that random selection is used 
+Bagged: typically 50-500 trees, all features
 
 
 Compare model performance:
@@ -462,7 +845,39 @@ Compare model performance:
 "Use appropriate performance evaluation metric(s) for this classification task. A table would be a good way to display your comparison. Use at least one visualization illustrating your model results."
 
 
-```{r}
+```{r compare-performance}
+# make a final table to compare performance
+# based on last_fit() |> collect_metrics()
+performance_metrics <- rbind(knn_metrics_roc,
+                             tree_metrics,
+                             bag_metrics,
+                             rf_metrics
+                             ) |> 
+  relocate(model, .before = .metric) |> 
+  select(-.config, -.estimator)
+
+#performance_metrics |> knitr::kable()
+performance_table <- performance_metrics |> gt::gt(
+  rowname_col = ".metric",
+  groupname_col = "model",
+  row_group_as_column = TRUE
+) |> 
+  gt::fmt_number(
+    columns = ".estimate",
+    decimals = 4
+  ) |> 
+  gt::opt_stylize(style = 2,
+                  color = "gray")
+performance_table
+```
+This table shows us that the best performing model for our data is the Random Forest model, with roc_auc and accuracy scoring higher than all other models. 
+
+
+```{r confusion-matrices}
+knn_conf_mat
+tree_conf_mat
+bag_conf_mat
+rf_conf_mat
 
 
 ```

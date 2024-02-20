@@ -135,7 +135,6 @@ doParallel::registerDoParallel() #build trees in parallel, as opposed to sequent
 system.time(
   
   tree_rs <- tune_grid(
-    # could also replace w workflow
     wf_tree_tune,
     resamples = genre_cv,
     grid = tree_grid, # 125 parameter combinations
