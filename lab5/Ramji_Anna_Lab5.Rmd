@@ -473,7 +473,15 @@ knn_metrics <- final_fit |> collect_metrics()
 knn_metrics_roc <- final_fit_roc |> 
   collect_metrics() |> 
   mutate(model = "KNN")
+
+# accuracy
+knn_metrics <- final_fit |> 
+  collect_metrics() |> 
+  mutate(model = "KNN")
 # knn_metrics_roc
+
+# knn_metrics_roc
+# knn_metrics
 ```
 
 ### Visualizing Model Performance
@@ -494,12 +502,24 @@ knn_train_conf_matrix <- train_predict |>
   theme(axis.text.x = element_text(angle = 30, hjust=1)) +  #rotate axis labels
   labs(title = "KNN Model: Train Prediction Confusion Matrix")
 
-knn_conf_mat <- test_predict_roc |> 
+knn_conf_mat_roc <- test_predict_roc |> 
   conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
   autoplot(type = "heatmap") + #plot confusion matrix with heatmap
   theme_bw() + #change theme
   theme(axis.text.x = element_text(angle = 30, hjust=1)) + #rotate axis labels
   labs(title = "KNN Model")
+
+knn_conf_mat <- test_predict |> 
+  conf_mat(truth = collection, estimate = .pred_class) |>  #create confusion matrix
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+  theme(axis.text.x = element_text(angle = 30, hjust=1)) + #rotate axis labels
+  labs(title = "KNN Model")
+
+# roc_auc
+#knn_conf_mat_roc
+# accuracy
+knn_conf_mat
 
 neighbors_plot <- autoplot(knn_cv_tune) + # plot cv results for parameter tuning
   theme_bw()
@@ -713,7 +733,7 @@ system.time(
     bag_wf_tune, # bag tree workflow here
     resamples = tree_cv,
     grid = bag_grid, # 125 parameter combinations
-    metrics = metric_set(roc_auc) # tune based on accuracy
+    metrics = metric_set(accuracy) # tune based on accuracy
   )
 )
 
@@ -739,7 +759,7 @@ predict_data_bag <- as.data.frame(final_bag_result$.predictions) |>
 
 bag_metrics <- final_bag_result |> 
   collect_metrics() |> 
-  mutate(model = "Bag Tree")
+  mutate(model = "Bagged Tree")
 # bag_metrics
 
 # bag_train_predict <- predict(object = final_bag_fit,
@@ -766,7 +786,7 @@ bag_conf_mat <- bag_test_predict |>
   autoplot(type = "heatmap") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
-  labs(title = "Bag Tree")
+  labs(title = "Bagged Tree")
 
 bag_conf_mat
 
@@ -936,7 +956,7 @@ Compare model performance:
 ```{r compare-performance}
 # make a final table to compare performance
 # based on last_fit() |> collect_metrics()
-performance_metrics <- rbind(knn_metrics_roc,
+performance_metrics <- rbind(knn_metrics,
                              tree_metrics,
                              bag_metrics,
                              rf_metrics
@@ -962,7 +982,7 @@ performance_table
 ```
 
 
-This table shows us that the best performing models for our data are the Random Forest and Bag Tree model, with roc_auc and accuracy scoring slightly higher than all other models, other than KNN, which has a higher roc_auc score. Based on the confusion matrices, the random forest model seems to perform the best on our data, with the fewest false negatives and false postives compared to true positives and true negatives. 
+This table shows us that the best performing models for our data are the Random Forest and Bagged Tree model (roc_auc slightly higher for Random Forest than Bagged Trees), with roc_auc and accuracy scoring slightly higher than all other models, other than KNN, which has a higher roc_auc score. Based on the confusion matrices, the Random Forest model seems to perform the best on our data, with the fewest false negatives and false postives compared to true positives and true negatives. 
 
 
 ```{r confusion-matrices}
@@ -978,7 +998,7 @@ comparison_bar_plot <- ggplot(data = performance_metrics) +
                y = estimate,
                fill = metric),
            stat = "identity", position = "dodge") +
-  scale_fill_manual(values = c("lightskyblue", "seagreen")) +
+  scale_fill_manual(values = c("plum", "darkmagenta")) +
   theme_bw() +
   labs(x = "Model",
        y = "Estimate",
