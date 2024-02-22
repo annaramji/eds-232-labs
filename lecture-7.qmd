@@ -1,0 +1,58 @@
+---
+author: "Anna Ramji"
+date: 2024-02-20
+---
+
+
+Lecture 7
+
+Gradient Descent
+
+Illustration with linear regression
+
+```{r}
+library(stats)
+set.seed(805)
+n <- 1000
+x <- rnorm(n)
+a <- 5
+b <- 1.3
+e <- 4
+y <- a + b * x + rnorm(n, sd = e)
+```
+
+```{r}
+library(tidyverse)
+
+```
+
+```{r}
+sim_d <- tibble(x = x, y = y)
+
+
+ggplot(sim_d, aes(x, y)) +
+  geom_point()
+```
+
+
+```{r}
+sim_ols <- lm(y ~x)
+summary(sim_ols)
+```
+
+```{r}
+mse <- function(a, b, x = sim_d$x, y = sim_d$y) {
+  preediction <- a + b * x
+  residuals <- y - prediction
+  squared_residuals <- residuals ^ 2
+  ssr <- sum(squared_residuals)
+  mean(ssr)
+}
+```
+
+
+```{r}
+mse(a = coef(sim_ols)[1], b = coef(sim_ols)[2])
+```
+
+
