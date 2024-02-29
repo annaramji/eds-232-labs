@@ -1,0 +1,292 @@
+---
+title: "Clustering Lab"
+author: "Anna Ramji"
+date: "2024-02-29"
+output: html_document
+---
+
+```{r, echo = FALSE, eval = TRUE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+
+library(tidyverse) 
+library(cluster) #cluster analysis
+library(factoextra) #cluster visualization
+library(tidymodels) #simulation 
+library(readr) #read data
+library(RColorBrewer)# Color palettes
+
+```
+
+We'll start off with some simulated data that has a structure that is amenable to clustering analysis.
+
+```{r init_sim}
+# Set the parameters of our simulated data
+set.seed(101)
+
+# setting parameters
+# centers
+cents <- tibble(
+  cluster = factor(1:3), # 3 clusters, labelled 1, 2, 3
+  num_points = c(100, 150, 50), # 3 sizes of our diff clusters
+  # anonymous simulated data
+  # center of each cluster = (x1, x2)
+  x1 = c(5, 0, -3),
+  x2 = c(-1, 1, -2)
+  
+)
+
+
+
+```
+"how do we set this up so that when we simulate the data, it conforms to these certain characteristics"
+
+map2:
+These functions are variants of map() that iterate over two arguments at a time
+```{r sim}
+# Simulate the data by passing n and mean to rnorm using map2()
+
+labelled_pts <-
+  cents |> 
+  mutate(
+    # applies rnorm function to specified number of points, coordinate x1
+    x1 = map2(num_points, x1, rnorm),
+    x2 = map2(num_points, x2, rnorm)
+    
+  ) |> 
+  select(-num_points) |> 
+  unnest(cols = c(x1, x2)) 
+
+labelled_pts
+
+
+ggplot(data = labelled_pts, 
+       aes(x1, x2, color = cluster)) +
+  geom_point(alpha = 0.4) +
+  theme_bw()
+```
+saying x2 instead of y because no outcome variable, just grouping identity
+
+```{r kmeans}
+# detect that there are 3 coherent groups here
+points <-
+  # observations
+  labelled_pts |> 
+  # remove cluster (because that's the answer)
+  select(-cluster)
+
+
+kclust <- kmeans(points,
+                 centers = 3, # start off by saying "I think there are 3 clusters"
+                 n = 25 # running the same model n times, but with diff randomly selected starting points for the centroids (starts by randomly picking centroids, all points closest to that point are assigned, then calculate what the actual cluster center is -- depending on where it's placed)
+                 # 25 times = reduces outcome sensitivity to those initial conditions
+#                 nstart = # "if centers is a number, how many random sets should be chosen?"
+                 )
+
+kclust
+```
+
+
+within cluster Sum of Squares -- how tightly / dense these clusters are
+
+total within each cluster, global 
+
+created some simulated data that would have 3 clusters, ran the model and told it we had 3 clusters, it told us what it thought those were, how well defined they were, how separated they were
+
+
+now: tuning -- parameter of k that corresponds to the (optimal) number of clusters the model should be looking for 
+
+```{r syst_k}
+# now let's try a systematic method for setting k
+# running multiple models, so plural
+kclusts <- 
+  tibble(
+    k = 1:9 # k is 1-9
+  ) |> 
+  mutate(
+    # for each one (k), run a model
+    kclust = map(k,
+                 # ~ means anonymous function
+                 ~ kmeans(points, # data that we'll run kmeans on, with single list of k values
+                             .x) # placeholder where k will be passed to 
+                 ),
+    augmented = map(kclust,
+                    augment,
+                    points)
+    
+  ) # produces a list
+
+```
+for each value of k (1:9), ran kmeans model, clustering, tibble gives information for each point
+
+
+
+
+```{r assign}
+# append cluster assignment to tibble
+# which cluster is each point associated with
+assignments <- 
+  kclusts |> 
+  unnest(cols = c(augmented))
+
+assignments
+
+# adds cluster assignment to coordinates
+# each row is a point, each point has an associated cluster assignment
+
+```
+
+```{r plot_9_clust}
+# Plot each model 
+
+ggplot(data = assignments,
+       aes(x = x1,
+           y = x2)) +
+  geom_point(aes(color = .cluster)) +
+  theme_bw() +
+  scale_color_brewer(palette = "Set1") +
+  facet_wrap(~k)
+
+
+```
+
+k indicates the number of clusters that the model is assuming
+
+
+"eye test sort of confirms what we were trying to set up there"
+
+using factoextra
+
+```{r elbow}
+# Use a clustering function from {factoextra} to plot  total WSSs
+
+fviz_nbclust(points, # this data
+             kmeans, # this function (kmeans clustering)
+             # (default is 15 times, 15 diff values of k)
+             "wss" # within sum squares 
+             )
+
+ 
+```
+
+shows spread
+- 1:2 big decrease
+
+2:3 moderate decrease, after that not much more
+
+elbow is at 3, confirms that the way we set it up (3) is best
+
+
+```{r more_fviz}
+# explore visualization capacity a lil more
+
+# Another plotting method
+
+k3 <- kmeans(points, centers = 3, nstart = 25)
+
+# makes it cleaner and easier to differentiate clusters (also more CB friendly bc diff shapes)
+p3 <- fviz_cluster(k3,
+                   geom = "point",
+                   data = points) +
+  ggtitle("k = 3")
+#  labs(title = "k = 3")
+
+p3 + theme_bw()
+```
+
+
+In-class assignment!
+
+Now it's your turn to partition a dataset.  For this round we'll use data from Roberts et al. 2008 on bio-contaminants in Sydney Australia's Port Jackson Bay.  The data are measurements of metal content in two types of co-occurring algae at 10 sample sites around the bay.
+
+```{r data}
+# Read in data
+metals_dat <- readr::read_csv(here::here("lab7", "data", "Harbour_metals.csv"))
+
+# Inspect the data
+str(metals_dat)
+
+# Grab pollutant variables
+metals_dat2 <- metals_dat[, 4:8] 
+metals_dat2
+```
+
+
+
+1. Start with k-means clustering - kmeans().  You can start with fviz_nbclust() to identify the best value of k. Then plot the model you obtain with the optimal value of k. 
+
+```{r}
+fviz_nbclust(metals_dat2,
+             kmeans,
+             "wss")
+# optimal number appears to be 3
+
+
+k_clust <- kmeans(metals_dat2,
+                  centers = 3,
+                  nstart = 25)
+
+k_clust
+
+metals_plot1 <- fviz_cluster(k_clust,
+                             geom = "point",
+                             data = metals_dat2) +
+  theme_bw()
+
+metals_plot1
+```
+
+
+Do you notice anything different about the spacing between clusters?  Why might this be?
+
+**The spacing between clusters seems slightly less tight / dense than in our previous dataset. This might be because there are varying levels of concentrations of metals at each of the 10 sample sites, and the levels might vary widely and overlap between the two types of algae which could lead to wider spacing in the clusters. **
+
+Run summary() on your model object.  Does anything stand out?
+
+```{r}
+summary(k_clust)
+```
+The data says that there are 60 clusters and 15 centers, which stands out. 
+
+
+2. Good, now let's move to hierarchical clustering that we saw in lecture. The first step for that is to calculate a distance matrix on the data (using dist()). Euclidean is a good choice for the distance method.
+
+```{r}
+distance <- dist(x = metals_dat2,
+                 method = "euclidean")
+
+
+```
+
+
+3. Use tidy() on the distance matrix so you can see what is going on. What does each row in the resulting table represent?
+
+```{r}
+
+tidy(distance)
+
+```
+
+**Each row in the resulting table represents the distance between two points, beginning with the first data point and measuring the Euclidean distance between that point and all other points, and continuing on through all 60 data points.** 
+
+4. Then apply hierarchical clustering with hclust().
+
+```{r}
+h_clust <- hclust(distance)
+h_clust
+```
+
+
+5. Now plot the clustering object. You can use something of the form plot(as.dendrogram()).  Or you can check out the cool visual options here: https://rpubs.com/gaston/dendrograms
+
+```{r}
+plot(as.dendrogram(h_clust))
+
+# plot(h_clust)
+```
+
+
+How does the plot look? Do you see any outliers?  How can you tell?  
+
+
+**There seem to be some outliers that are over 50 units of distance away from other points, as the branches that are connecting these nodes to the next nearest data points are quite tall. The height of the branch between the different data points indicates how far away the points are from each other -- the branch connecting the first point (51) and the next cluster is around 75 units of distance away, indicating that data point 51 may be an outlier.**

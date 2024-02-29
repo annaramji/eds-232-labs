@@ -37,7 +37,8 @@ eel_eval_data <- read_csv(here("lab6", "data", "eel.eval.data.csv"))
 
 eel_model_data <- read_csv(here("lab6", "data", "eel.model.data.csv")) |> 
   mutate(Angaus = as.factor(Angaus)) |> 
-  mutate(Method = as.factor(Method))
+  mutate(Method = as.factor(Method)) |> 
+  select(-Site) # dropping site, because it's essentially an index column
 ```
 
 
@@ -100,6 +101,7 @@ xgb_workflow <- workflow() |>  #create workflow
 -   Use appropriate metrics argument(s) - Computational efficiency becomes a factor as models get more complex and data get larger. Record the time it takes to run. Do this for each tuning phase you run. You could use {tictoc} or Sys.time().
 
 ```{r grid}
+# Mateo said we could have this part outside of the 
 learn_grid <- expand.grid(learn_rate = seq(0.0001, 0.3, length.out = 30))
 
 system.time(
@@ -117,7 +119,7 @@ system.time(
 3.  Show the performance of the best models and the estimates for the learning rate parameter values associated with each.
 
 ```{r performance}
-xgb_best <- show_best(xgb_cv_tune, n = 3, metric = "roc_auc") #get metrics for best random forest model
+xgb_best <- show_best(xgb_cv_tune, n = 3, metric = "roc_auc") # get metrics for best random forest model
 
 # xgb_best |> kableExtra::kbl() |> 
 #   kableExtra::kable_classic()
@@ -161,7 +163,7 @@ latin_hypercube_trees <- grid_latin_hypercube(
                                         tree_depth(),
                                         min_n(),
                                         loss_reduction(),
-                                        size = 50
+                                        size = 50 # number of parameter combinations returned
                                         )
 
 
@@ -298,17 +300,42 @@ xgb_final_wf <- finalize_workflow(xgb_workflow_stochastic,
                                                 metric = "roc_auc"))
 
 ```
+
+
 ```{r fit-predict-train}
 
+# fitting and predicting ----
 train_fit <- fit(xgb_final_wf, train)
 
-train_predict <- predict(train_fit, train) |> 
-  bind_cols(train)
+test_predict <- predict(train_fit, test) |> 
+  bind_cols(test)
+
+accuracy(test_predict, truth = Angaus, estimate = .pred_class) #get accuracy of testing prediction
+
+# using last fit ----
+
+last_train_fit <- last_fit(xgb_final_wf, split = data_split)
+# collect metrics 
+
+model_performance1 <- last_train_fit |> collect_metrics() 
+model_performance1 |> gt()
+
+
+test_predict %>% 
+  conf_mat(truth = Angaus, estimate = .pred_class) %>% #create confusion matrix
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+ # theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+  #rotate axis labels
+  labs(title = "Final Prediction")
+
 
 ```
 
 
 1.  How well did your model perform? What types of errors did it make?
+
+My model is better than a baseline of guessing that the eel species Angaus is either always present or never present (always absent). It is correctly guessing absence fairly well, but it is not particularly better than a random guess for predicting presence of Angaus. 
 
 
 ## Fit your model the evaluation data and compare performance
@@ -317,7 +344,26 @@ train_predict <- predict(train_fit, train) |>
 
 ```{r fit-predict-eval}
 
+# we already dropped the "Site" column from the eel_model_data, which is important for this 
+eel_eval_tidy <- eel_eval_data |> 
+  rename(Angaus = Angaus_obs) |> 
+  mutate(Angaus = as.factor(Angaus)) |> 
+  mutate(Method = as.factor(Method))
 
+model_eval_pred <- predict(train_fit, eel_eval_data) |> 
+  bind_cols(eel_eval_tidy)
+
+#collect_metrics(model_eval_pred)
+
+accuracy(model_eval_pred, truth = Angaus, estimate = .pred_class) #get accuracy of testing prediction
+
+model_eval_pred %>% 
+  conf_mat(truth = Angaus, estimate = .pred_class) %>% #create confusion matrix
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+ # theme(axis.text.x = element_text(angle = 30, hjust=1)) +
+  #rotate axis labels
+  labs(title = "Performance on Evaluation Set")
 
 
 ```
@@ -325,7 +371,21 @@ train_predict <- predict(train_fit, train) |>
 
 2.  How does your model perform on this data?
 
+
+
 3.  How do your results compare to those of Elith et al.?
 
 -   Use {vip} to compare variable importance
 -   What do your variable importance results tell you about the distribution of this eel species?
+
+
+```{r}
+train_fit |> 
+  extract_fit_parsnip() |> 
+  vip() +
+  theme_bw()
+
+
+```
+
+My top variable of importance is the same as the researchers': `SegSumT`
