@@ -1,7 +1,7 @@
 ---
 title: "Lab6"
 author: Anna Ramji
-date: "2023-03-01"
+date: "2023-03-06"
 output: html_document
 ---
 
@@ -12,6 +12,11 @@ This week's lab follows a project modeling the eel species Anguilla australis de
 (presence/absence data)
 
 ```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = TRUE)
+```
+
+
+```{r library}
 library(tidyverse)
 library(here)
 library(tidymodels)
@@ -390,8 +395,7 @@ train_fit |>
   extract_fit_parsnip() |> 
   vip(num_features = 12L) +
   theme_bw() +
-  labs(title = "Variable importance for my Boosted ")
-
+  labs(title = "Variable Importance for Model Evaluation") 
 
 ```
 
