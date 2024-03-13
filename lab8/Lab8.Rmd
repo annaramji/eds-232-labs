@@ -1,9 +1,14 @@
 ---
 title: "Lab 8"
-author: "Mateo Robbins"
-date: "2024-03-06"
+author: "Anna Ramji"
+date: "2024-03-07"
 output: html_document
 ---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+```
 
 ## Forest Cover Classification with SVM
 
@@ -15,21 +20,358 @@ You task is build both an SVM and a random forest model and compare their perfor
 
 1.  The data is available here: <https://ucsb.box.com/s/ai5ost029enlguqyyn04bnlfaqmp8kn4>
 
+```{r library-data}
+library(tidymodels)
+library(dplyr)
+library(kernlab)
+library(tidyverse)
+library(here)
+
+covtype_data <- read_csv(here("lab8", "data", "covtype_sample.csv"))
+
+```
+
+
 Explore the data.
+```{r explore-data}
+#summary(covtype_data)
+# str(covtype_data)
+```
 
 -   What kinds of features are we working with?
 
+We're working with elevation, slope, aspect, physical characteristics of the topography and area, including: horizontal distance to roadways, hydrology, and fire points; hillshade at 9, noon, and 3; wilderness area; and 41 soil types (Soil_Type, Soil_Type_1, .... Soil_Type_40). Currently these values are all doubles. 
+
+We are predicting on the outcome/classifier factor column, Cover_Type (we'll need to set this as a factor) with 7 classes
+
+```{r}
+cover_type_summary <- covtype_data |> 
+  group_by(Cover_Type) |> 
+  summarize(cov_type_count = n())
+
+cover_type_summary
+
+ggplot(data = covtype_data) +
+  geom_histogram(aes(x = Cover_Type), 
+                 binwidth = 0.5,
+                 fill = "seagreen") +
+  theme_bw()
+```
+
+
 -   Does anything stand out that will affect you modeling choices?
+
+**There seems to be a class imbalance in the cover types, with significantly more of type 1 and 2, and significantly fewer of type 4. This will affect my modeling choices in that I'll need to incorporate a resampling technique (strata) to account for this and preserve that ratio. I will also incorporate step_zv() in my recipe to remove any columns with zero observations, as we won't be able to run our model if some of the soil types have zero observations.**
 
 Hint: Pay special attention to the distribution of the outcome variable across the classes.
 
 2.  Create the recipe and carry out any necessary preprocessing. Can you use the same recipe for both models?
+**I ended up not using the same recipe for both models 
+
+```{r}
+set.seed(1) # pseudo-randomness for reproducibility
+# preprocessing ------
+covtype_clean <- covtype_data |> 
+  janitor::clean_names() |> 
+  select(-c(where(~sum(.) == 0))) |>  # removing soil types that never appear in our dataset
+  mutate(across(.cols = starts_with("soil"), as.factor)) |> 
+  mutate(across(.cols = c(11, 12, 13), as.factor)) |> # changing 3 wilderness area variables to factors
+  mutate(cover_type = as.factor(cover_type))
+   # find soil type columns that have no instances, remove those columns
+
+# split the data ----
+
+split <- initial_split(data = covtype_clean, 
+                       prop = 0.7, # 70:30 split
+                       strata = cover_type) # stratifying by Cover_Type to preserve ratio in training and testing data sets
+
+train <- training(split)
+test <- testing(split)
+
+# specify a recipe that we can use for both models ----
+# where we center to mean of 0 and scale to sd of 1
+svm_recipe <- recipe(cover_type ~ ., data = covtype_clean) |> 
+  step_zv(all_predictors()) |> # remove columns w zero variables 
+  step_center(all_numeric_predictors()) |> # center
+  step_scale(all_numeric_predictors()) |>  # scale (together, these normalize)
+  step_dummy(all_nominal_predictors())  # create dummy variables from all factors
+#  step_integer(all_predictors())
+
+# Create linear SVM model specification
+svm_rbf <- svm_rbf(cost = tune()) |> 
+  set_mode("classification") |> 
+  set_engine("kernlab")
+
+# workflow
+svm_wf <- workflow() |> 
+  add_model(svm_rbf) |> 
+  add_recipe(svm_recipe)
+
+```
+
 
 3.  Create the folds for cross-validation.
 
+```{r}
+# setting up cv folds ----
+# add in strata point here
+cv_folds <- vfold_cv(train, v = 5, strata = cover_type)
+```
+
+
 4.  Tune the models. Choose appropriate parameters and grids. If the computational costs of tuning given your strategy are prohibitive, how might you work around this?
+
+
+```{r}
+# set grid
+svm_grid <- grid_regular(cost(), # tuning for Cost
+                          levels = 5)
+
+
+doParallel::registerDoParallel(cores = 4) # run in parallel
+
+# commented out so that I can render in a reasonable amount of time
+# system.time(
+#   svm_rs <- tune_grid(
+#     # could also replace w workflow
+#     svm_wf,
+#     resamples = cv_folds,
+#     grid = svm_grid # 125 parameter combinations
+#    # metrics = metric_set(accuracy) # tune based on accuracy
+#   )
+# )
+#   user  system elapsed 
+# 209.304   2.724  83.753 
+
+# saving output
+write_rds(svm_rs, here("lab8", "data", "svm_rs.rda"))
+
+# reading in saved output from tune_grid
+svm_rs <- read_rds(here("lab8", "data", "svm_rs.rda"))
+
+```
+
+```{r}
+# svm_rbf_fit <- svm_rbf |> 
+#   fit(cover_type ~ ., data = train)
+
+# finalize workflow  ----
+best_cost <- select_best(svm_rs, metric = "accuracy")
+
+svm_final <- finalize_workflow(svm_wf, best_cost)
+
+svm_fit_final <- svm_final |>  fit(train)
+# maximum number of iterations reached 0.001501743 0.001473877
+
+# last fit steps ----
+svm_last_fit <- svm_final |> last_fit(split)
+
+#rf_fit <- rf_final_roc_auc |> fit(Cover_Type ~ ., data = small_train)
+svm_last_metrics <- svm_last_fit |> 
+  collect_metrics() |> 
+  mutate(model = "SVM RBF")
+
+# augment steps ----
+
+svm_augment <- augment(svm_fit_final, new_data = test) 
+
+svm_augment |> 
+  conf_mat(truth = cover_type, estimate = .pred_class)
+
+
+svm_augment |> 
+  roc_curve(truth = cover_type, .pred_1, .pred_2, .pred_3, .pred_4, .pred_5, .pred_6, .pred_7) |> 
+  autoplot()
+
+svm_augment |> 
+  roc_auc(truth = cover_type, .pred_1, .pred_2, .pred_3, .pred_4, .pred_5, .pred_6, .pred_7) |> 
+  gt::gt()
+
+svm_performance <- 
+svm_augment |> 
+  accuracy(truth = cover_type, .pred_class)
+```
+
+
+```{r}
+# predict
+
+
+#rf_fit <- rf_final_roc_auc |> fit(Cover_Type ~ ., data = small_train)
+rf_last_metrics <- rf_final_fit |> 
+  collect_metrics() |> 
+  mutate(model = "Random Forest")
+
+
+# visualizing performance ----
+autoplot(rf_cv_tune)
+
+# get train predictions 
+rf_train <- predict(fit_rf, train) |>  # get prediction probabilities for test 
+  # gets predicted class .pred_class (same type as your truth class)
+  bind_cols(train) |> 
+  relocate(cover_type, .before = .pred_class)
+
+rf_train_metrics <- rf_train |> 
+  metrics(cover_type, .pred_class) |> 
+  mutate(model = "Random Forest") |> 
+  mutate(set = "Train")
+
+# get test predictions 
+rf_test <- predict(fit_rf, test) |>  # get prediction probabilities for test 
+  # gets predicted class .pred_class (same type as your truth class)
+  bind_cols(test) |> 
+  relocate(cover_type, .before = .pred_class)
+
+rf_test_metrics <- rf_test |> 
+  metrics(cover_type, .pred_class) |> 
+  mutate(model = "Random Forest") |> 
+  mutate(set = "Test")
+
+```
+
+### Random Forest
+
+```{r eval=FALSE, include=FALSE}
+# making a smaller subset of our data
+# smaller_split <- initial_split(train, 0.30, # taking 30% of the data because this takes hours to run otherwise
+#                                strata = cover_type)
+# 
+# small_train <- training(smaller_split)
+# small_test <- testing(smaller_split)
+
+# make new cv folds 
+#tree_folds <- vfold_cv(data = train, v = 5)
+
+
+# set up new recipe since we have a smaller subset of data
+# tree_rec <- recipe(cover_type ~ ., data = small_train) |> 
+#   step_center(all_numeric_predictors()) |> 
+#   step_scale(all_numeric_predictors()) |> 
+#   step_normalize(all_numeric_predictors()) |> # normalize all numeric predictors
+#   step_dummy(all_nominal_predictors())  # create dummy variables from all factors
+```
+
+
+```{r}
+# set random forest tree model
+tree_model <- rand_forest(
+  mtry = tune(),
+  trees = tune()
+) |> 
+  set_engine("ranger") |> 
+  set_mode("classification")
+
+# random forest workflow
+rf_workflow <- workflow() |> 
+  add_model(tree_model) |> 
+  add_recipe(svm_recipe)
+
+# doParallel::registerDoParallel(cores = 4) #build trees in parallel
+# 
+# system.time(
+# rf_cv_tune <- rf_workflow |>
+#   tune_grid(resamples = cv_folds,
+#             grid = 5) # use cross validation to tune mtry and trees parameters
+# 
+# )
+
+#   user  system elapsed 
+# 338.540   4.847 131.685 
+
+#write_rds(rf_cv_tune, here("lab8", "data", "rf_cv_tune.rda"))
+# reading in rda file for faster knitting
+rf_cv_tune <- read_rds(here("lab8", "data", "rf_cv_tune.rda"))
+
+
+#rf_best_acc <- show_best(rf_cv_tune, n = 1, metric = "accuracy")
+#rf_best_roc_auc <- show_best(rf_rs, n = 1, metric = "roc_auc")
+
+#rf_best_acc
+#rf_best_roc_auc # mtry 27, 1000 trees
+
+# finalize workflow  ----
+rf_final_wf<- finalize_workflow(rf_workflow, 
+                              select_best(rf_cv_tune, metric = "roc_auc"))
+
+# assessing performance ----
+fit_rf <- fit(rf_final_wf, train)
+
+rf_augment <- augment(fit_rf, new_data = test) 
+
+rf_augment |> 
+  conf_mat(truth = cover_type, estimate = .pred_class) |> 
+  autoplot(type = "heatmap") + #plot confusion matrix with heatmap
+  theme_bw() + #change theme
+  labs(title = "Random Forest") # update title
+
+rf_augment |> 
+  roc_curve(truth = cover_type, .pred_1, .pred_2, .pred_3, .pred_4, .pred_5, .pred_6, .pred_7) |> 
+  autoplot()
+
+rf_augment |> 
+  roc_auc(truth = cover_type, .pred_1, .pred_2, .pred_3, .pred_4, .pred_5, .pred_6, .pred_7) |> 
+  gt::gt()
+```
+
+
+```{r}
+# get last fit
+rf_final_fit <- rf_final_accuracy |>
+  last_fit(split) # takes an rsplit object
+
+#rf_fit <- rf_final_roc_auc |> fit(Cover_Type ~ ., data = small_train)
+rf_last_metrics <- rf_final_fit |> 
+  collect_metrics() |> 
+  mutate(model = "Random Forest")
+
+
+# visualizing performance ----
+autoplot(rf_cv_tune)
+
+# get train predictions 
+rf_train <- predict(fit_rf, train) |>  # get prediction probabilities for test 
+  # gets predicted class .pred_class (same type as your truth class)
+  bind_cols(train) |> 
+  relocate(cover_type, .before = .pred_class)
+
+rf_train_metrics <- rf_train |> 
+  metrics(cover_type, .pred_class) |> 
+  mutate(model = "Random Forest") |> 
+  mutate(set = "Train")
+
+# get test predictions 
+rf_test <- predict(fit_rf, test) |>  # get prediction probabilities for test 
+  # gets predicted class .pred_class (same type as your truth class)
+  bind_cols(test) |> 
+  relocate(cover_type, .before = .pred_class)
+
+rf_test_metrics <- rf_test |> 
+  metrics(cover_type, .pred_class) |> 
+  mutate(model = "Random Forest") |> 
+  mutate(set = "Test")
+
+rf_metrics <- rbind(rf_test_metrics, rf_train_metrics)
+rf_metrics
+```
+
+
+
+
+random forest - resplit training data 5% (0.05) of training data, 2 fold, grid = 3
+
 
 5.  Conduct final predictions for both models and compare their prediction performances and computation costs from part 4.
 
+```{r}
+
+
+
+```
+
+
 -   Which type of model do you think is better for this task?
 -   Why do you speculate this is the case?
+
+
+random forest good at working through class imbalance. SVM built for binary, random forest better for multiclass classifying
