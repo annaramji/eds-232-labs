@@ -80,7 +80,7 @@ covtype_clean <- covtype_data |>
    # find soil type columns that have no instances, remove those columns
 
 # split the data ----
-
+# initial split with 70:30 ratio, stratifying by factored outcome variable, cover_type
 split <- initial_split(data = covtype_clean, 
                        prop = 0.7, # 70:30 split
                        strata = cover_type) # stratifying by Cover_Type to preserve ratio in training and testing data sets
@@ -89,6 +89,7 @@ train <- training(split)
 test <- testing(split)
 
 # ========= Recipe ===========================================================
+
 # specify a recipe that we can use for both models ----
 # where we center to mean of 0 and scale to sd of 1
 svm_recipe <- recipe(cover_type ~ ., data = covtype_clean) |> 
@@ -96,7 +97,7 @@ svm_recipe <- recipe(cover_type ~ ., data = covtype_clean) |>
   step_center(all_numeric_predictors()) |> # center
   step_scale(all_numeric_predictors()) |>  # scale (together, these normalize)
   step_dummy(all_nominal_predictors())  # create dummy variables from all factors
-#  step_integer(all_predictors())
+
 
 # ====== Model Specifications & Workflow =====================================
 
@@ -158,7 +159,7 @@ svm_grid <- grid_regular(cost(), # tuning for Cost
                           levels = 5)
 
 
-doParallel::registerDoParallel(cores = 4) # run in parallel
+# doParallel::registerDoParallel(cores = 4) # run in parallel
 
 # commented out so that I can render in a reasonable amount of time
 # system.time(
@@ -211,32 +212,31 @@ rf_cv_tune <- read_rds(here("lab8", "data", "rf_cv_tune.rda"))
 
 
 
-
-
-
-
-
-
-
+5.  Conduct final predictions for both models and compare their prediction performances and computation costs from part 4.
 
 
 
 ```{r}
+
+# ================= SVM Final Prediction Performance =========================
 # svm_rbf_fit <- svm_rbf |> 
 #   fit(cover_type ~ ., data = train)
 
 # finalize workflow  ----
-best_cost <- select_best(svm_rs, metric = "accuracy")
+# select best cost parameter value based on optimizing roc_auc (rather than accuracy, as roc_auc is more informative, though we will just be comparing accuracy later on)
+best_cost <- select_best(svm_rs, metric = "roc_auc")
 
+# finalize workflow
 svm_final <- finalize_workflow(svm_wf, best_cost)
 
+# fit final workflow to use in augment steps 
 svm_fit_final <- svm_final |>  fit(train)
 # maximum number of iterations reached 0.001501743 0.001473877
 
 # last fit steps ----
 svm_last_fit <- svm_final |> last_fit(split)
 
-#rf_fit <- rf_final_roc_auc |> fit(Cover_Type ~ ., data = small_train)
+# collect metrics ----
 svm_last_metrics <- svm_last_fit |> 
   collect_metrics() |> 
   mutate(model = "SVM RBF")
@@ -245,92 +245,33 @@ svm_last_metrics <- svm_last_fit |>
 
 svm_augment <- augment(svm_fit_final, new_data = test) 
 
-svm_augment |> 
+# build confusion matrix
+svm_conf_mat <- svm_augment |> 
   conf_mat(truth = cover_type, estimate = .pred_class) |> 
   autoplot(type = "heatmap") + #plot confusion matrix with heatmap
   theme_bw() + #change theme
   labs(title = "Support Vector Machines (RBF)") # update title
 
+# view confusion matrix
+svm_conf_mat
 
+# plot roc curves
 svm_augment |> 
   roc_curve(truth = cover_type, .pred_1, .pred_2, .pred_3, .pred_4, .pred_5, .pred_6, .pred_7) |> 
   autoplot()
 
-svm_augment |> 
-  roc_auc(truth = cover_type, .pred_1, .pred_2, .pred_3, .pred_4, .pred_5, .pred_6, .pred_7) |> 
-  gt::gt()
+# svm_augment |> 
+#   roc_auc(truth = cover_type, .pred_1, .pred_2, .pred_3, .pred_4, .pred_5, .pred_6, .pred_7) |> 
+#   gt::gt()
 
-svm_performance <- svm_augment |> 
-  accuracy(truth = cover_type, .pred_class) |> 
-  mutate(model = "SVM RBF")
-```
-
+# svm_performance <- svm_augment |> 
+#   accuracy(truth = cover_type, .pred_class) |> 
+#   mutate(model = "SVM RBF")
 
 
+# ============= Random Forest Final Prediction Performance ===================
 
 
-```{r eval=FALSE, include=FALSE}
-# making a smaller subset of our data
-# smaller_split <- initial_split(train, 0.30, # taking 30% of the data because this takes hours to run otherwise
-#                                strata = cover_type)
-# 
-# small_train <- training(smaller_split)
-# small_test <- testing(smaller_split)
-
-# make new cv folds 
-#tree_folds <- vfold_cv(data = train, v = 5)
-
-
-# set up new recipe since we have a smaller subset of data
-# tree_rec <- recipe(cover_type ~ ., data = small_train) |> 
-#   step_center(all_numeric_predictors()) |> 
-#   step_scale(all_numeric_predictors()) |> 
-#   step_normalize(all_numeric_predictors()) |> # normalize all numeric predictors
-#   step_dummy(all_nominal_predictors())  # create dummy variables from all factors
-```
-
-
-```{r}
-# set random forest tree model
-tree_model <- rand_forest(
-  mtry = tune(),
-  trees = tune()
-) |> 
-  set_engine("ranger") |> 
-  set_mode("classification")
-
-# random forest workflow
-rf_workflow <- workflow() |> 
-  add_model(tree_model) |> 
-  add_recipe(svm_recipe)
-
-# doParallel::registerDoParallel(cores = 4) #build trees in parallel
-# 
-# system.time(
-# rf_cv_tune <- rf_workflow |>
-#   tune_grid(resamples = cv_folds,
-#             grid = 5) # use cross validation to tune mtry and trees parameters
-# 
-# )
-
-#   user  system elapsed 
-# 338.540   4.847 131.685 
-
-#write_rds(rf_cv_tune, here("lab8", "data", "rf_cv_tune.rda"))
-# reading in rda file for faster knitting
-rf_cv_tune <- read_rds(here("lab8", "data", "rf_cv_tune.rda"))
-
-
-#rf_best_acc <- show_best(rf_cv_tune, n = 1, metric = "accuracy")
-#rf_best_roc_auc <- show_best(rf_rs, n = 1, metric = "roc_auc")
-
-#rf_best_acc
-#rf_best_roc_auc # mtry 27, 1000 trees
-
-```
-
-
-```{r}
 # finalize workflow  ----
 rf_final_wf<- finalize_workflow(rf_workflow, 
                               select_best(rf_cv_tune, metric = "roc_auc"))
@@ -411,24 +352,36 @@ rf_metrics |> gt::gt(
     set = "Set"
   )
   
-  
 ```
+
 
 Here we can see that the model might be slightly overfit to the training data, as the performance drops by 17 percentage points for accuracy betweent the Train and Test data set model metrics.
 
 
+```{r eval=FALSE, include=FALSE}
+# making a smaller subset of our data
+# smaller_split <- initial_split(train, 0.30, # taking 30% of the data because this takes hours to run otherwise
+#                                strata = cover_type)
+# 
+# small_train <- training(smaller_split)
+# small_test <- testing(smaller_split)
 
-5.  Conduct final predictions for both models and compare their prediction performances and computation costs from part 4.
+# make new cv folds 
+#tree_folds <- vfold_cv(data = train, v = 5)
+
+
+# set up new recipe since we have a smaller subset of data
+# tree_rec <- recipe(cover_type ~ ., data = small_train) |> 
+#   step_center(all_numeric_predictors()) |> 
+#   step_scale(all_numeric_predictors()) |> 
+#   step_normalize(all_numeric_predictors()) |> # normalize all numeric predictors
+#   step_dummy(all_nominal_predictors())  # create dummy variables from all factors
+```
+
+
+
 
 ```{r}
-
-# ================= SVM Final Prediction Performance =========================
-
-
-
-# ============= Random Forest Final Prediction Performance ===================
-
-
 
 # ============ Compare Prediction Performances ===============================
 
@@ -473,14 +426,9 @@ performance_table
 ```
 
 
-random forest - resplit training data 5% (0.05) of training data, 2 fold, grid = 3
-
-
-
-
-
 -   Which type of model do you think is better for this task?
 -   Why do you speculate this is the case?
 
+**I think that the random forest model is better for this task, as it scores higher in accuracy (and roc_auc) than the (radial basis function) support vector machine. **
 
-random forest good at working through class imbalance. SVM built for binary, random forest better for multiclass classifying
+**This might be the case because random forest models are good at working through class imbalances, which is what we observed at the beginning in our preliminary data exploration. The outcome variable `cover_type` is observed at very uneven levels (far more observations for type 1 and 2 than the rest, with particularly low observations for type 4). SVM seems to generally be built for binary classification, and random forest seems to be better for multiclass classifying, which is what we are trying to do for this task. **
