@@ -1,7 +1,7 @@
 ---
 title: "Lab 8"
 author: "Anna Ramji"
-date: "2024-03-07"
+date: "2024-03-13"
 output: html_document
 ---
 
@@ -34,39 +34,53 @@ covtype_data <- read_csv(here("lab8", "data", "covtype_sample.csv"))
 
 Explore the data.
 ```{r explore-data}
+# commented out to avoid extraneous output
 #summary(covtype_data)
 # str(covtype_data)
 ```
 
 -   What kinds of features are we working with?
 
-We're working with elevation, slope, aspect, physical characteristics of the topography and area, including: horizontal distance to roadways, hydrology, and fire points; hillshade at 9, noon, and 3; wilderness area (only three of these seem to be factors); and 41 soil types (Soil_Type, Soil_Type_1, .... Soil_Type_40). Currently these values are all doubles (numeric). 
+**We're working with elevation, slope, aspect, physical characteristics of the topography and area, including: horizontal distance to roadways, hydrology, and fire points; hillshade at 9, noon, and 3; wilderness area (only three of these seem to be factors); and 41 soil types (Soil_Type, Soil_Type_1, .... Soil_Type_40). Currently these values are all doubles (numeric). **
 
-We are predicting on the outcome/classifier factor column, Cover_Type (we'll need to set this as a factor) with 7 classes
+**We are predicting on the outcome/classifier factor column, Cover_Type (we'll need to set this as a factor) with 7 classes.**
 
 ```{r}
 cover_type_summary <- covtype_data |> 
   group_by(Cover_Type) |> 
-  summarize(cov_type_count = n())
+  summarize(count = n())
 
-cover_type_summary
+cover_type_summary |> gt::gt() |> gt::opt_stylize(style = 2, color = "green")
 
-ggplot(data = covtype_data) +
+# make histogram of cover types
+cov_type_plot <- ggplot(data = covtype_data) +
   geom_histogram(aes(x = Cover_Type), 
                  binwidth = 0.5,
                  fill = "seagreen") +
-  theme_bw()
+  theme_bw() +
+  labs(x = "Cover Type",
+       y = "Count",
+       title = "Distribution of Cover Types")
+
+# view plot
+cov_type_plot
+
+
+# inspect to see if any columns have no observations
+# covtype_data |>  select(where(~sum(.) == 0))
 ```
 
 
 -   Does anything stand out that will affect you modeling choices?
 
-**There seems to be a class imbalance in the cover types, with significantly more of type 1 and 2, and significantly fewer of type 4. This will affect my modeling choices in that I'll need to incorporate a resampling technique (strata) to account for this and preserve that ratio. I will also incorporate step_zv() in my recipe to remove any columns with zero observations, as we won't be able to run our model if some of the soil types have zero observations.**
-
 Hint: Pay special attention to the distribution of the outcome variable across the classes.
 
+**There seems to be a notable class imbalance in the cover types, with significantly more of type 1 and 2, and significantly fewer of type 4 (and the rest, with 4 being the most extremely under-observed). This will affect my modeling choices in that I'll need to incorporate a resampling technique (strata) to account for this and preserve that ratio. Based on other preliminary data exploration, I noticed that Soil_Type_15 has 0 observations, and some other types have very few observations (are very rarely observed). I will also incorporate `step_zv()` in my recipe to remove any columns with zero observations, as we won't be able to run our model if some of the soil types have zero observations.**
+
+
 2.  Create the recipe and carry out any necessary preprocessing. Can you use the same recipe for both models?
-**I ended up not using the same recipe for both models, as I added the step_zv() step in my recipe which removes columns with zero variables, so if a random sample contains a variable that has no observations, it is dropped. I also centered and scaled my numeric predictors, and used step_dummy() to create dummy variables from all factors.**
+
+**I ended up not using the same recipe for both models, as I added the `step_zv()` step in my recipe which removes columns with zero variables, so if a random sample contains a variable that has no observations, it is dropped. I also centered and scaled my numeric predictors, and used `step_dummy()` to create dummy variables from all factors.**
 
 ```{r q2}
 set.seed(1) # pseudo-randomness for reproducibility
@@ -296,7 +310,7 @@ rf_augment |>
 
 
 # get last fit
-rf_final_fit <- rf_final_accuracy |>
+rf_final_fit <- rf_final_wf |>
   last_fit(split) # takes an rsplit object
 
 #rf_fit <- rf_final_roc_auc |> fit(Cover_Type ~ ., data = small_train)

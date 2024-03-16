@@ -51,3 +51,6 @@ rsconnect/
 lab*/data
 
 */.DS_Store
+
+lab5/lab5_data/
+lab5/named_audio_anna.csv
