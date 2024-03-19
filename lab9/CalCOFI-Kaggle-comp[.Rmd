@@ -1,0 +1,283 @@
+---
+author: "Anna Ramji"
+date: 2024-03-18
+---
+
+
+```{r setup}
+# load packages
+# packages
+library(tidyverse)
+library(janitor) # data cleaning
+library(here)
+
+# modeling
+library(tidymodels)
+library(ranger) # random forest engine specs
+library(vip) # variable importance
+library(xgboost) #package for boosted trees
+
+```
+
+
+```{r data}
+# read in training and test data
+train_data <- read_csv(here("lab9", "data", "train.csv"))
+test_data <- read_csv(here("lab9", "data", "test.csv"))
+
+
+```
+
+
+
+
+```{r}
+set.seed(1)
+# preliminary tidying
+train_clean <- train_data %>% 
+  janitor::clean_names() %>% 
+  select(-c(id, x13)) %>%  # drop id column (not helpful for our model)
+  rename(ta1 = ta1_x) # rename ta1 column to match test data set
+```
+
+data exploration
+
+```{r}
+train_clean %>% 
+  ggplot() +
+  geom_histogram(aes(x = lon_dec))
+
+
+train_clean %>% 
+  ggplot() +
+  geom_histogram(aes(x = lat_dec))
+
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = salinity1, 
+                 y = dic)) +
+  theme_bw() +
+  labs(title = "Salinity vs. DIC")
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = po4u_m, 
+                 y = dic)) +
+  theme_bw() +
+  labs(title = "Phosphate vs. DIC")
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = r_oxy_micromol_kg, 
+                 y = dic)) +
+  theme_bw() +
+  labs(title = "Oxygen vs. DIC")
+```
+
+There seem to be several variables that are strongly correlated, and several variables that have multiple similar variables (oxygen, salinity, temperature)
+
+```{r split}
+# split training data 70:30
+train_split <- initial_split(train_clean, prop = 0.7)
+dic_train <- training(train_split)
+dic_test <- testing(train_split)
+
+
+```
+
+```{r prep}
+# prep for tuning
+# set up cv folds
+cv_folds <- vfold_cv(dic_train, v = 5) # 5-fold cv to improve comp time
+
+# recipe
+
+
+# define recipe
+xgb_recipe <- recipe(dic ~ ., data = dic_train) %>%
+  step_normalize(all_numeric_predictors()) %>% 
+  step_zv() # remove zero variance variables
+
+# set model
+xgb_model <- boost_tree(
+  # tune for:
+  learn_rate = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow <- workflow() %>%  #create workflow
+  add_model(xgb_model) %>%  #add boosted trees model
+  add_recipe(xgb_recipe) #add recipe
+
+
+```
+
+I'm starting off with xgboost since Mateo mentioned that it's what a lot of Kaggle competition winners use.
+```{r tune1}
+# set up grid for xgboost tuning
+
+
+xgb_learn_grid <- expand.grid(learn_rate = seq(0.0001, 0.3, length.out = 30))
+
+system.time(
+  xgb_cv_tune <- tune_grid(xgb_workflow,
+                           resamples = cv_folds,
+                           grid = xgb_learn_grid
+                           ) 
+)
+
+```
+
+
+### XGBOOST #2: Tune for trees, tree_depth, min_n
+```{r}
+# take 2
+
+# set model
+xgb_model_2 <- boost_tree(
+  # tune for:
+  # learn_rate = tune(),
+  trees = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_2 <- workflow() %>%  #create workflow
+  add_model(xgb_model_2) %>%  #add boosted trees model
+  add_recipe(xgb_recipe) #add recipe
+
+
+```
+
+
+tuning w grid latin hypercube
+```{r}
+# tune tree paramters
+latin_hypercube_trees <- grid_latin_hypercube(
+                                        trees(),
+                                        tree_depth(),
+                                        min_n(),
+                                        size = 10 # number of parameter combinations returned
+                                        )
+
+```
+
+```{r}
+# tune 2
+
+system.time(
+  xgb_cv_tune_trees <- tune_grid(
+      xgb_workflow_2,
+      resamples = cv_folds,  # same 5-fold cv
+      grid = latin_hypercube_trees) 
+ )
+
+```
+
+
+```{r}
+# show top 3 based on rmse
+show_best(xgb_cv_tune_trees, n = 3, metric = "rmse")
+# select best
+best_trees <- select_best(xgb_cv_tune_trees, metric = "rmse")
+```
+
+
+```{r}
+# Update model with optimized trees, min_n, and tree_depth
+trees_tune <- best_trees$trees
+tree_depth_tune <- best_trees$tree_depth
+min_n_tune <- best_trees$min_n
+
+xgb_mod_tree_tuned <- boost_tree(
+  # tune for:
+  # learn_rate = tune(),
+  trees = trees_tune,
+  tree_depth = tree_depth_tune,
+  min_n = min_n_tune,
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_2_tuned <- workflow() %>%  # create workflow
+  add_model(xgb_mod_tree_tuned) %>%  # add updated trees model
+  add_recipe(xgb_recipe) # same recipe
+
+```
+
+
+```{r}
+# fit to train data
+xgb_fit_2 <- fit(xgb_workflow_2_tuned, dic_train)
+
+# predict onto test split from training data
+xgb_test_pred_3 <- predict(object = xgb_fit_2,
+                           new_data = dic_test) %>%
+    bind_cols(dic_test) %>%
+    relocate(dic, .after = .pred) %>%
+    rename(DIC = .pred)
+
+xgb_2_metrics <- xgb_test_pred_3 %>% metrics(truth = dic, estimate = DIC)
+xgb_2_metrics %>% filter(.metric == "rmse")
+```
+
+## XGBOOST #3: Tune for trees, tree_depth, min_n, mtry, learn_rate
+
+```{r}
+
+# set model
+xgb_model_3 <- boost_tree(
+  # tune for:
+  learn_rate = tune(),
+  trees = tune(),
+  tree_depth = tune(),
+  min_n = tune(),
+  mtry = tune(),
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_3 <- workflow() %>%  #create workflow
+  add_model(xgb_model_3) %>%  #add boosted trees model
+  add_recipe(xgb_recipe) #add recipe
+
+
+```
+
+
+
+
+
+### XGBOOST #4: Tune for everything!
+
+```{r}
+# set model
+xgb_model_4 <- boost_tree(
+  # tune for: (in order of appearance in documentation)
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(),
+  stop_iter = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_4 <- workflow() %>%  #create workflow
+  add_model(xgb_model_4) %>%  #add boosted trees model
+  add_recipe(xgb_recipe) #add recipe
+
+```
+
