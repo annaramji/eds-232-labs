@@ -1,0 +1,909 @@
+---
+author: "Anna Ramji"
+date: 2024-03-18
+---
+
+
+```{r setup}
+# load packages
+# packages
+library(tidyverse)
+library(janitor) # data cleaning
+library(here)
+
+# modeling
+library(tidymodels)
+library(ranger) # random forest engine specs
+library(vip) # variable importance
+library(xgboost) #package for boosted trees
+
+```
+
+
+```{r data}
+# read in training and test data
+train_data <- read_csv(here("lab9", "data", "train.csv"))
+test_data <- read_csv(here("lab9", "data", "test.csv"))
+
+
+set.seed(1)
+# preliminary tidying
+train_clean <- train_data %>% 
+  janitor::clean_names() %>% 
+  select(-c(id, x13)) %>%  # drop id column (not helpful for our model), drop empty x13 column
+  rename(ta1 = ta1_x) # rename ta1 column to match test data set
+```
+
+### Data exploration
+
+```{r}
+train_clean %>% 
+  ggplot() +
+  geom_histogram(aes(x = lon_dec))
+
+
+train_clean %>% 
+  ggplot() +
+  geom_histogram(aes(x = lat_dec))
+
+# depth
+
+# might make sense to stratify by depth
+train_clean %>% 
+  ggplot() +
+  geom_histogram(aes(x = r_depth))
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = r_depth, 
+                 y = dic))
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = salinity1, 
+                 y = dic)) +
+  theme_bw() +
+  labs(title = "Salinity vs. DIC")
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = r_sal, 
+                 y = dic)) +
+  theme_bw() +
+  labs(title = "Salinity vs. DIC")
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = po4u_m, 
+                 y = dic)) +
+  theme_bw() +
+  labs(title = "Phosphate vs. DIC")
+
+train_clean %>% 
+  ggplot() +
+  geom_point(aes(x = r_oxy_micromol_kg, 
+                 y = dic)) +
+  theme_bw() +
+  labs(title = "Oxygen vs. DIC")
+```
+
+There seem to be several variables that are strongly correlated, and several variables that have multiple similar variables (oxygen, salinity, temperature)
+
+```{r split}
+# split training data 70:30
+train_split <- initial_split(train_clean, prop = 0.7)
+dic_train <- training(train_split)
+dic_test <- testing(train_split)
+
+
+```
+
+```{r prep}
+# prep for tuning -----
+# set up cv folds ----
+basic_cv_folds <- vfold_cv(dic_train, v = 10) # 10-fold cv
+
+
+# define recipe ----
+xgb_base_recipe <- recipe(dic ~ ., # all predictors
+                     data = dic_train) %>%
+  step_normalize(all_numeric_predictors()) %>% 
+  step_zv(all_predictors()) # remove zero variance variables
+
+# set model ----
+xgb_base_model <- boost_tree(
+  # tune for:
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow ----
+xgb_workflow <- workflow() %>%  #create workflow
+  add_model(xgb_base_model) %>%  #add boosted trees model
+  add_recipe(xgb_base_recipe) #add recipe
+
+
+```
+
+I'm starting off with xgboost since Mateo mentioned that it's what a lot of Kaggle competition winners use.
+```{r tune1}
+# set up grid for xgboost tuning
+# xgb_basic_grid <- expand.grid(learn_rate = seq(0.0001, 0.3, length.out = 30))
+
+# tune tree parameters
+latin_hypercube_trees <- grid_latin_hypercube(
+  finalize(mtry(), dic_train),
+  trees(),
+  min_n(),
+  tree_depth(),
+  learn_rate(),
+  loss_reduction(),
+  size = 10 # number of parameter combinations returned (default is 3)
+)
+# speed up processing time
+doParallel::registerDoParallel(cores = 4)
+
+# show processing time
+system.time(
+  xgb_cv_tune <- tune_grid(xgb_workflow,
+                           resamples = basic_cv_folds,
+                           grid = latin_hypercube_trees
+                           ) 
+)
+
+# show best combination of hyperparameters based on RMSE
+show_best(xgb_cv_tune, n = 5, metric = "rmse")
+# best is rmse 6.25
+```
+
+
+### xgboost 1.2: select fewer predictors, test with vs. without stratifying by depth
+
+```{r}
+set.seed(1)
+# prep for tuning -----
+# set up cv folds ----
+depth_cv_folds <- vfold_cv(dic_train, v = 10, # 10-fold cv
+                           strata = r_depth) # stratify by depth
+
+
+# define recipe ----
+xgb_selective_recipe <- recipe(dic ~  `r_depth` + # reported depth
+                   `r_sal` + # Reported Salinity (from Specific Volume Anomoly, M³/Kg) (density)
+                   `ta1` + # total alkalinity
+                   `no2u_m` + # nitrite
+                   `no3u_m` + # nitrate
+                   #`nh3u_m` + # ammonia
+                   `salinity1` + # Salinity (Practical Salinity Scale 1978) (conductivity)
+                   `temperature_deg_c` + # water temp
+                   #`r_nuts` + # ammonium
+                   `r_oxy_micromol_kg` + # oxygen
+                   `r_dynht` + # Reported Dynamic Height in units of dynamic meters (work per unit mass)
+                   `po4u_m`+ # phosphate
+                   `si_o3u_m`, # silicate, # all predictors
+                     data = dic_train) %>%
+  step_normalize(all_numeric_predictors()) %>% 
+  step_zv(all_predictors()) # remove zero variance variables
+
+# set model (same model) ----
+xgb_model_tune <- boost_tree(
+  # tune for:
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow ----
+xgb_depth_workflow <- workflow() %>%  #create workflow
+  add_model(xgb_model_tune) %>%  #add boosted trees model
+  add_recipe(xgb_selective_recipe) #add recipe
+
+# set up grid for tuning  (same grid)
+latin_hypercube_trees <- grid_latin_hypercube(
+  finalize(mtry(), dic_train),
+  trees(),
+  min_n(),
+  tree_depth(),
+  learn_rate(),
+  loss_reduction(),
+  size = 10 # number of parameter combinations returned (default is 3)
+)
+# speed up processing time
+doParallel::registerDoParallel(cores = 4)
+
+# show processing time
+system.time(
+  xgb_depth_tune <- tune_grid(xgb_depth_workflow,
+                           resamples = depth_cv_folds,
+                           grid = latin_hypercube_trees
+                           ) 
+)
+#user  system elapsed 
+# 45.896   0.599  14.081 
+
+# show best combination of hyperparameters based on RMSE
+show_best(xgb_depth_tune, n = 5, metric = "rmse")
+# best rmse is 6.54
+
+# finalize workflow
+final_depth_wf <- finalize_workflow(xgb_depth_workflow,
+                                       select_best(xgb_depth_tune, metric = "rmse"))
+
+depth_last_fit <- last_fit(final_depth_wf, train_split)
+
+depth_last_fit %>% collect_metrics()
+# rmse 5.98600 ( better than when including r_nuts)
+```
+
+### xgboost 1.3: no depth
+```{r no-depth}
+set.seed(1)
+# prep for tuning -----
+# set up cv folds ----
+basic_cv_folds <- vfold_cv(dic_train, v = 10) # 10-fold cv
+
+
+# define recipe ----
+xgb_selective_recipe <- recipe(dic ~  `r_depth` + # reported depth
+                   `r_sal` + # Reported Salinity (from Specific Volume Anomoly, M³/Kg) (density)
+                   `ta1` + # total alkalinity
+                   `no2u_m` + # nitrite
+                   `no3u_m` + # nitrate
+                   #`nh3u_m` + # ammonia
+                   `salinity1` + # Salinity (Practical Salinity Scale 1978) (conductivity)
+                   `temperature_deg_c` + # water temp
+                  # `r_nuts` + # ammonium
+                   `r_oxy_micromol_kg` + # oxygen
+                  # `r_dynht` + # Reported Dynamic Height in units of dynamic meters (work per unit mass)
+                   `po4u_m`+ # phosphate
+                   `si_o3u_m`, # silicate, # all predictors
+                     data = dic_train) %>%
+  step_normalize(all_numeric_predictors()) %>% 
+  step_zv(all_predictors()) # remove zero variance variables
+
+# set model (same model) ----
+xgb_model_tune <- boost_tree(
+  # tune for:
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow ----
+xgb_no_depth_workflow <- workflow() %>%  #create workflow
+  add_model(xgb_model_tune) %>%  #add boosted trees model
+  add_recipe(xgb_selective_recipe) #add recipe
+
+# set up grid for tuning  (same grid)
+latin_hypercube_trees <- grid_latin_hypercube(
+  finalize(mtry(), dic_train),
+  trees(),
+  min_n(),
+  tree_depth(),
+  learn_rate(),
+  loss_reduction(),
+  size = 10 # number of parameter combinations returned (default is 3)
+)
+# speed up processing time
+doParallel::registerDoParallel(cores = 4)
+
+# show processing time
+system.time(
+  xgb_no_depth_tune <- tune_grid(xgb_no_depth_workflow,
+                           resamples = basic_cv_folds,
+                           grid = latin_hypercube_trees
+                           ) 
+)
+#    user  system elapsed 
+# 45.700   0.565  13.995
+
+# show best combination of hyperparameters based on RMSE
+show_best(xgb_no_depth_tune, n = 5, metric = "rmse")
+# best rmse is 6.405
+
+# finalize workflow
+final_no_depth_wf <- finalize_workflow(xgb_no_depth_workflow,
+                                       select_best(xgb_no_depth_tune, metric = "rmse"))
+
+no_depth_last_fit <- last_fit(final_no_depth_wf, train_split)
+
+no_depth_last_fit %>% collect_metrics()
+# rmse 5.98
+# rmse 5.96 without ta1
+```
+
+
+
+### XGBOOST #2: Tune for trees, tree_depth, min_n
+```{r}
+# take 2
+
+# set model
+xgb_model_2 <- boost_tree(
+  # tune for:
+  # learn_rate = tune(),
+  trees = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_2 <- workflow() %>%  #create workflow
+  add_model(xgb_model_2) %>%  #add boosted trees model
+  add_recipe(xgb_recipe) #add recipe
+
+
+```
+
+
+tuning w grid latin hypercube
+```{r}
+# tune tree paramters
+latin_hypercube_trees <- grid_latin_hypercube(
+                                        trees(),
+                                        tree_depth(),
+                                        min_n(),
+                                        size = 10 # number of parameter combinations returned
+                                        )
+
+```
+
+```{r}
+# tune 2
+
+system.time(
+  xgb_cv_tune_trees <- tune_grid(
+      xgb_workflow_2,
+      resamples = cv_folds,  # same 5-fold cv
+      grid = latin_hypercube_trees) 
+ )
+
+```
+
+
+```{r}
+# show top 3 based on rmse
+show_best(xgb_cv_tune_trees, n = 3, metric = "rmse")
+# select best
+best_trees <- select_best(xgb_cv_tune_trees, metric = "rmse")
+```
+
+
+```{r}
+# Update model with optimized trees, min_n, and tree_depth
+trees_tune <- best_trees$trees
+tree_depth_tune <- best_trees$tree_depth
+min_n_tune <- best_trees$min_n
+
+xgb_mod_tree_tuned <- boost_tree(
+  # tune for:
+  # learn_rate = tune(),
+  trees = trees_tune,
+  tree_depth = tree_depth_tune,
+  min_n = min_n_tune,
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_2_tuned <- workflow() %>%  # create workflow
+  add_model(xgb_mod_tree_tuned) %>%  # add updated trees model
+  add_recipe(xgb_recipe) # same recipe
+
+```
+
+
+```{r}
+# fit to train data
+xgb_fit_2 <- fit(xgb_workflow_2_tuned, dic_train)
+
+# predict onto test split from training data
+xgb_test_pred_3 <- predict(object = xgb_fit_2,
+                           new_data = dic_test) %>%
+    bind_cols(dic_test) %>%
+    relocate(dic, .after = .pred) %>%
+    rename(DIC = .pred)
+
+xgb_2_metrics <- xgb_test_pred_3 %>% metrics(truth = dic, estimate = DIC)
+xgb_2_metrics %>% filter(.metric == "rmse")
+```
+
+## XGBOOST #3: Tune for trees, tree_depth, min_n, mtry, learn_rate
+
+```{r}
+
+# set model
+xgb_model_3 <- boost_tree(
+  # tune for:
+  learn_rate = tune(),
+  trees = tune(),
+  tree_depth = tune(),
+  min_n = tune(),
+  mtry = tune(),
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_3 <- workflow() %>%  #create workflow
+  add_model(xgb_model_3) %>%  #add boosted trees model
+  add_recipe(xgb_recipe) #add recipe
+
+
+```
+
+
+
+
+
+### XGBOOST #4: Tune for everything!
+
+```{r}
+
+
+# set model
+xgb_model_4 <- boost_tree(
+  # tune for: (in order of appearance in documentation)
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune()
+#  sample_size = tune(),
+#  stop_iter = tune()
+  ) %>% 
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# set workflow
+xgb_workflow_4 <- workflow() %>%  #create workflow
+  add_model(xgb_model_4) %>%  #add boosted trees model
+  add_recipe(xgb_recipe) #add recipe
+
+```
+
+
+```{r}
+# tune tree parameters
+latin_hypercube_trees <- grid_latin_hypercube(
+  finalize(mtry(), dic_train),
+  trees(),
+  min_n(),
+  tree_depth(),
+  learn_rate(),
+  loss_reduction(),
+#  sample_size = sample_prop(),
+ # stop_iter(),
+  size = 7 # number of parameter combinations returned
+)
+
+system.time(
+  xgb_cv_tune_4 <- tune_grid(xgb_workflow_4,
+                           resamples = cv_folds,
+                           grid = latin_hypercube_trees
+                           ) 
+)
+
+```
+
+
+
+## Anna & Amanda
+
+```{r}
+pairs(train_clean)
+```
+
+
+```{r}
+library(GGally)
+ggpairs(train_clean)
+```
+
+
+
+```{r}
+set.seed(1)
+# new split
+new_train_split <- initial_split(train_clean, prop = 0.75)
+new_train <- training(new_train_split)
+new_test <- testing(new_train_split)
+
+# new cv folds
+new_folds <- vfold_cv(new_train, v = 10)
+
+
+# new recipe with selected variables
+
+new_recipe <- recipe(dic ~ 
+                       `si_o3u_m` +
+                       `po4u_m` +
+                       `r_sal` + 
+                       `r_oxy_micromol_kg` +
+                       `salinity1` +
+                       `no3u_m` +
+                   #    `r_temp` + 
+                       `temperature_deg_c` +
+                       `ta1` +
+                       `r_depth` + 
+                       `r_dynht` +  # +
+                       `no2u_m` +
+                       `r_nuts` +
+                      `lat_dec` +
+                      `lon_dec`  
+                       ,
+                     data = new_train
+) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_zv(all_predictors()) # remove zero variance variables
+
+
+# new model
+new_model <- boost_tree(
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune()
+) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+
+# set workflow
+
+new_workflow <- workflow() %>% 
+  add_recipe(new_recipe) %>% 
+  add_model(new_model)
+
+# tune grid
+# tune tree parameters
+new_latin_hypercube <- grid_latin_hypercube(
+  finalize(mtry(), new_train),
+  trees(),
+  min_n(),
+  tree_depth(),
+  learn_rate(),
+  size = 7 # number of parameter combinations returned
+)
+
+
+system.time(
+  new_xgb_cv_tune <- tune_grid(new_workflow,
+                           resamples = new_folds,
+                           grid = new_latin_hypercube
+                           ) 
+)
+
+```
+
+
+```{r}
+show_best(new_xgb_cv_tune, n = 5, metric = "rmse")
+
+
+```
+
+
+```{r}
+# finalize workflow based on optimized rmse
+new_xgb_final_wf <- finalize_workflow(new_workflow,
+                                 select_best(new_xgb_cv_tune,
+                                            metric = "rmse"))
+
+# fit to train data
+new_xgb_fit <- fit(new_xgb_final_wf, new_train)
+
+# predict onto test split from training data
+new_xgb_test_pred <- predict(object = new_xgb_fit, new_data = new_test) %>%
+    bind_cols(new_test) %>%
+    relocate(.pred, .before = lat_dec) %>%
+    rename(DIC = .pred) %>% 
+  relocate(dic, .after = DIC)
+head(new_xgb_test_pred)
+
+new_xgb_test_pred %>% metrics(truth = dic, estimate = DIC)
+
+```
+
+
+
+```{r}
+# view variable importance
+# mat <- xgb.importance (feature_names = colnames(new_train),model = new_workflow)
+# xgb.plot.importance (importance_matrix = mat[1:20]) 
+
+# fit on train split
+rf_fit <- fit(new_xgb_final_wf, new_train)
+
+rf_fit %>%
+  extract_fit_parsnip() %>% 
+  vip(num_features = 16)+ 
+  theme_bw()
+
+```
+
+
+Ignoring warnings to tune everything
+
+```{r}
+set.seed(1)
+# new split
+new_train_split <- initial_split(train_clean, prop = 0.75)
+new_train <- training(new_train_split)
+new_test <- testing(new_train_split)
+
+# new cv folds
+new_folds <- vfold_cv(new_train,
+                      v = 10, # 10-fold CV
+                      strata = r_depth) # stratify by depth
+
+
+# new recipe with selected variables
+
+all_recipe <- recipe(dic ~ 
+                       `si_o3u_m` +
+                       `po4u_m` +
+                       `r_sal` + 
+                       `r_oxy_micromol_kg` +
+                       `salinity1` +
+                       `no3u_m` +
+                    #   `r_temp` + 
+                       `temperature_deg_c` +
+                       `ta1` +
+                       `r_depth` + 
+                       `r_dynht`+
+                       `no2u_m` 
+                    #   `r_nuts` +
+                    #  `lat_dec` +
+                    #  `lon_dec`  
+                       ,
+                     data = new_train
+) %>% 
+  step_normalize(all_numeric_predictors())  %>% 
+  step_zv(all_predictors()) # remove zero variance variables
+
+
+# new model
+all_model_tune <- boost_tree(
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune()
+#  stop_iter = tune()
+) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+
+# set workflow
+
+all_workflow_tune <- workflow() %>% 
+  add_recipe(all_recipe) %>% 
+  add_model(all_model_tune)
+
+# tune grid
+# tune tree parameters
+all_latin_hypercube <- grid_latin_hypercube(
+  finalize(mtry(), new_train),
+  trees(),
+  min_n(),
+  tree_depth(),
+  learn_rate(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+#  stop_iter(),
+  size = 10 # number of parameter combinations returned
+)
+
+# speed up processing time
+doParallel::registerDoParallel(cores = 4)
+# check run time
+system.time(
+  new_xgb_cv_tune <- tune_grid(all_workflow_tune,
+                           resamples = new_folds,
+                           grid = all_latin_hypercube
+                           ) 
+)
+
+
+# show best for RMSE
+show_best(new_xgb_cv_tune, n = 5, metric = "rmse")
+
+# std_err issue
+```
+
+```{r}
+# finalize workflow based on optimized rmse
+all_xgb_final_wf <- finalize_workflow(all_workflow_tune,
+                                 select_best(new_xgb_cv_tune,
+                                            metric = "rmse"))
+
+# fit to train data
+all_xgb_fit <- fit(all_xgb_final_wf, new_train)
+
+# predict onto test split from training data
+all_xgb_test_pred <- predict(object = all_xgb_fit, new_data = new_test) %>%
+    bind_cols(new_test) %>%
+    relocate(.pred, .before = lat_dec) %>%
+    rename(DIC = .pred) %>% 
+  relocate(dic, .after = DIC)
+head(new_xgb_test_pred)
+
+all_xgb_test_pred %>% metrics(truth = dic, estimate = DIC)
+
+
+last_fit <- last_fit(all_xgb_final_wf, new_train_split)
+collect_metrics(last_fit)
+```
+
+
+
+## Writing
+We decided to use Random Forest because:
+- we are running regression (outcome is a continuous numeric variable)
+- in our training-test split, it consistently performed better than boosted trees (`xgboost`) (lower RMSE, which we are trying to minimize)
+- better than just Decision Trees or Bagged Trees (introduces randomness)
+
+
+Recipe creation:
+
+We ran a random forest model with all predictor variables (except for id) and looked at the variable importance (using `vip`) and from there we removed the least important variables (latitude, longitude, nh3u_m). We also removed `r_temp` because in the metadata, we saw that it is listed as "reported (potential) temperature", which [insert copied description].... [reword]. We preferred to use in-situ water temperature (`temperature_deg_c`) and didn't want to have duplicate variables (when we plotted r_temp and temperature_deg_c, we saw essentially a 1:1 relationship). We also ran `pairs()` to plot the relationships between all variables, and saw that there was no apparent relationship between `lat_dec` and `lon_dec` and `dic`. We also saw that `nh3u_m` and `r_nuts` appeared to have visually messy relationships with `dic`.
+
+We observed silicate, phosphate, oxygen, and salinity (two distinct measurements of this), were the most important variables. This makes sense because _________(relationship between these and levels of dissolved inorganic carbon)_______.
+
+Nitrate, temperature, alkalinity, and depth were also fairly important
+
+
+We used `step_zv()` to remove variables that had zero variance and `step_normalize()` to scale and center all of our numeric predictors.
+  
+
+We decided to tune all Random Forest hyperparameters (`mtry`, `trees` and `min_n`) to optimize our model as much as possible.
+
+
+We used 10-fold cross validation because this provides a decent number of folds while not taking too much computational time. 
+
+
+We used this 10-fold cross-validation and a 10x10 grid to tune [explain]. 
+
+We then finalized our workflow based on the optimal combination of these hyperparameters, optimizing based on minimizing root mean squared errors (rmse). 
+
+We fit our workflow to all of the training data, then predicted onto the test data and selected (and renamed) the relevant columns for submission. 
+
+
+
+```{r}
+# come back: test stratifying by depth
+
+# create recipe
+# remove some variables after looking at variable importance plot
+grid_rf_recipe <- recipe(dic ~ #`lat_dec` + 
+                        #`lon_dec` + 
+                        #`r_temp` + # reported temp of air or water???
+                        `r_depth` + 
+                        `r_sal` + 
+                        `ta1` +
+                        `no2u_m` + 
+                        `no3u_m` + 
+                        #`nh3u_m` + # ammonia
+                        # `r_nuts` + # ammonium
+                        `salinity1` + 
+                        `temperature_deg_c` + # water temp
+                        `r_oxy_micromol_kg` +
+                        `r_dynht` +
+                        `po4u_m`+
+                        `si_o3u_m`, 
+                data = new_train) %>%
+  step_zv(all_predictors()) %>% # remove variables that only have a single value
+  step_normalize(all_numeric_predictors()) 
+
+# specify model
+# tune all three parameters
+rf_model <- rand_forest(mtry = tune(), 
+                        trees = tune(),
+                        min_n = tune()) %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+# create workflow
+rf_workflow <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(grid_rf_recipe)
+
+# cross validation
+rf_cv_fold <- vfold_cv(new_train, v = 10,
+                       strata = r_depth) # stratify by depth because different depths are sampled unevenly -- maintain this class imbalance in our folds, resamples
+```
+
+```{r}
+
+# specifying grid
+rf_grid <- grid_regular(finalize(mtry(), new_train), 
+                        trees(),
+                        min_n(),
+                        levels = 5)
+
+
+doParallel::registerDoParallel(cores = 4) #build trees in parallel
+
+system.time(
+  rf_rs <- tune_grid(
+    rf_workflow, # random forest workflow here
+    resamples = rf_cv_fold,
+    grid = rf_grid
+  )
+)
+
+#    user   system  elapsed 
+# 1313.523   22.977 4097.007 
+```
+
+
+```{r}
+show_best(rf_rs, n = 5, metric = "rmse")
+```
+
+
+
+
+```{r}
+doParallel::registerDoParallel(cores = 4)
+
+# define cross-validation for tuning
+system.time(
+  rf_cv_tune <- rf_workflow %>%
+    tune_grid(resamples = rf_cv_fold, 
+              grid = 10)
+)
+```
+
+```{r}
+show_best(rf_cv_tune, n = 5, metric = "rmse")
+```
+
+
+```{r}
+# finalize workflow with tuned parameters
+rf_final_wf <- finalize_workflow(rf_workflow,
+                                 select_best(rf_cv_tune, metric = "rmse"))
+
+# fit on train 
+rf_fit <- fit(rf_final_wf, new_train)
+
+# predict on full_test
+final_results <- predict(rf_fit, new_test) %>% 
+  bind_cols(test)
+
+# df for final submission
+rf_final <- final_results %>% 
+  select(id, .pred) %>% 
+  rename(DIC = .pred)
+```
+
+```{r}
+
+```
+
+
