@@ -1,2 +1,2 @@
-# eds-232-labs
-Lab materials (other than lab 1) for EDS 232 Machine Learning
+# Machine Learning for Environmental Data Science
+Lab materials (not including lab 1) for EDS 232 Machine Learning, part of the UCSB Bren School of Environmental Science & Management's Master of Environmental Data Science program in Winter Quarter, 2024. Taught by Matthew "Mateo" Robbins, PhD [LinkedIn](https://www.linkedin.com/in/matthew-mateo-robbins-phd-75462817/) | [GitHub](https://github.com/MaRo406)
